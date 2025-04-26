@@ -2,6 +2,7 @@ name: Finance Assistant
 description: Manage finances, sync with YNAB, and integrate with Home Assistant.
 version: "0.3.454"
 slug: finance_assistant
+# upstream: "https://github.com/your-github-username/example-addon-repository"
 init: false
 startup: services
 ingress: true
@@ -20,20 +21,19 @@ map:
   - ssl
 ports:
   8000/tcp: 8000
-  5001/tcp: null
+#  5001/tcp: null # Removing - not needed with ingress
 ports_description:
   8000/tcp: "Direct API access (development only)"
-  5001/tcp: Web interface (Not required for Ingress)
+#  5001/tcp: Web interface (Not required for Ingress)
 options:
   ynab_api_key: ""
   ynab_budget_id: ""
 schema:
   ynab_api_key: str
   ynab_budget_id: str
-codenotary: codenotary@frenck.dev
 stage: experimental
-url: "https://github.com/chbarnhouse/home-assistant-addons"
-webui: "http://[HOST]:[PORT:5001]"
+url: "https://github.com/chbarnhouse/home-assistant-addons/tree/main/finance_assistant"
+# webui: "http://[HOST]:[PORT:5001]" # Relying on ingress
 homeassistant_api: true
-devices:
-  - /dev/dri
+# devices: # Removing device access unless needed
+#   - /dev/dri
