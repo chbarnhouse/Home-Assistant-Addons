@@ -1,0 +1,12 @@
+# fastapi - Removed
+# uvicorn[standard] - Removed
+# python-multipart - Removed
+# pynab - Replaced with official SDK
+ynab-api==2.0.2
+requests
+Flask~=2.3.0
+Flask-Cors
+python-dotenv
+gunicorn
+uvicorn~=0.29.0
+# a2wsgi~=1.7.0 - Replaced with Werkzeug adapter

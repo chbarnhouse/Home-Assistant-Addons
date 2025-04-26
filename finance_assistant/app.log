@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/workspaces/devcontainer_3/addons/finance_assistant/backend/app.py", line 8, in <module>
+    import ynab_api
+ModuleNotFoundError: No module named 'ynab_api'
