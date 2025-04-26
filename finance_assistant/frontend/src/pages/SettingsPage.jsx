@@ -76,7 +76,9 @@ function SettingsPage() {
   }, [loadInitialData]);
 
   const handleThemeChange = (event) => {
-    setMode(event.target.value);
+    const newPreference = event.target.value;
+    console.log(`Changing theme preference to: ${newPreference}`);
+    setMode(newPreference);
   };
 
   return (
