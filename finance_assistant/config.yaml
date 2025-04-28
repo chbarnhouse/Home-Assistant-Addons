@@ -1,13 +1,13 @@
 name: Finance Assistant
 description: "Manage finances, sync with YNAB, and integrate with Home Assistant."
-version: "0.3.532"
+version: "0.3.533"
 slug: "finance_assistant"
 # upstream: "https://github.com/your-github-username/example-addon-repository"
 init: false
 startup: services
 ingress: true
 ingress_port: 8000
-api: true
+# api: true # Temporarily remove to test supervisor ping
 panel_icon: mdi:finance
 panel_title: Finance Assistant
 arch:
