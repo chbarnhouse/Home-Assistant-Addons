@@ -101,32 +101,18 @@ def supervisor_token_required(f):
 # REMOVED url_prefix='/api' to simplify routing with ingress
 api_bp = Blueprint('api', __name__) # No url_prefix
 
-# IMPORTANT: Create a secondary registration of the same blueprint with the ingress path as prefix - This might be less critical now
-@app.before_request
-def handle_ingress_request():
-    """
-    Detect and redirect ingress-prefixed API calls to their proper handlers
-    """
-    # Log all incoming requests HERE
-    _LOGGER.info(f"<<< Before Request >>> Path: {request.path}, Ingress Header: {request.headers.get('X-Ingress-Path')}, Remote: {request.remote_addr}")
+# --- Simple Ping Test Route (OUTSIDE Blueprint, for direct Supervisor check) ---
+@app.route('/ping')
+def ping_direct():
+    _LOGGER.info("--- PING ENDPOINT HIT --- (via /ping - direct app route)")
+    return jsonify({"message": "pong"})
 
-    ingress_path = request.headers.get('X-Ingress-Path', '')
-    if ingress_path and request.path.startswith(ingress_path):
-        # If this is a request to an API endpoint via the ingress path
-        # e.g. /api/hassio_ingress/123/all_data should go to /api/all_data
-        if not ingress_path.endswith('/'):
-            ingress_path += '/'
-        # Check if this is an API request after the ingress path
-        path_after_ingress = request.path[len(ingress_path):]
-        _LOGGER.debug(f"Request path after ingress: '{path_after_ingress}'")
-        # No need to rewrite since we're registering the blueprint at both paths
-
-# --- Simple Ping Test Route (on Blueprint) ---
+# --- Simple Ping Test Route (on Blueprint, for general API use if needed) ---
 @api_bp.route('/ping')
 # @supervisor_token_required # REMOVED - Ping should not require auth
 def ping():
-    _LOGGER.info("--- PING ENDPOINT HIT --- (via /api/ping)") # Added specific logging
-    _LOGGER.info("Received request for /ping (no prefix)") # Updated log message
+    _LOGGER.info("--- PING ENDPOINT HIT --- (via /api/ping - blueprint route)") # Added specific logging
+    # _LOGGER.info("Received request for /ping (no prefix)") # Updated log message
     return jsonify({"message": "pong"})
 
 # Testing route at the root level - no authentication needed
