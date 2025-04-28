@@ -15,8 +15,7 @@ import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import Tooltip from "@mui/material/Tooltip";
 import { DataGrid } from "@mui/x-data-grid";
-import EditAccountModal from "../components/EditAccountModal";
-import AddEditAccountModal from "../components/AddEditAccountModal";
+import AccountFormModal from "../components/AccountFormModal";
 import { fetchAllData, callApi } from "../utils/api";
 import AccountBalanceWalletIcon from "@mui/icons-material/AccountBalanceWallet";
 import SavingsIcon from "@mui/icons-material/Savings";
@@ -26,6 +25,106 @@ import Alert from "@mui/material/Alert";
 import { useSnackbar } from "../context/SnackbarContext";
 
 const MANUAL_ACCOUNT_API = "manual_account";
+
+// --- Add Frontend Implementation of calculate_allocations ---
+function calculateAllocationsFrontend(totalBalanceMilliunits, rules = []) {
+  let liquid = 0;
+  let frozen = 0;
+  let deepFreeze = 0;
+  let remainingBalance = totalBalanceMilliunits;
+
+  const processedRuleIds = new Set();
+
+  // 1. Process Fixed Amount Rules
+  for (const rule of rules) {
+    const ruleId = rule?.id;
+    if (ruleId === "remaining" || processedRuleIds.has(ruleId)) {
+      continue;
+    }
+    if (rule?.type === "fixed") {
+      try {
+        const valueMilliunits = Math.round(parseFloat(rule.value || 0) * 1000); // Use round for safety
+        const amountToAllocate = Math.min(valueMilliunits, remainingBalance);
+        const status = rule.status;
+        if (amountToAllocate > 0) {
+          if (status === "Liquid") liquid += amountToAllocate;
+          else if (status === "Frozen") frozen += amountToAllocate;
+          else if (status === "Deep Freeze") deepFreeze += amountToAllocate;
+          // else console.warn(`Unknown status '${status}' in fixed rule ${ruleId}`);
+          remainingBalance -= amountToAllocate;
+          processedRuleIds.add(ruleId);
+        }
+      } catch (e) {
+        console.error(`Error processing fixed rule ${ruleId}:`, e);
+      }
+    }
+  }
+
+  // 2. Process Percentage Rules (on remaining balance after fixed)
+  const balanceAfterFixed = remainingBalance;
+  for (const rule of rules) {
+    const ruleId = rule?.id;
+    if (ruleId === "remaining" || processedRuleIds.has(ruleId)) {
+      continue;
+    }
+    if (rule?.type === "percentage") {
+      try {
+        const percentage = parseFloat(rule.value || 0);
+        if (percentage > 0 && percentage <= 100) {
+          let amountToAllocate = Math.round(
+            balanceAfterFixed * (percentage / 100)
+          ); // Use round
+          amountToAllocate = Math.min(amountToAllocate, remainingBalance);
+          const status = rule.status;
+          if (amountToAllocate > 0) {
+            if (status === "Liquid") liquid += amountToAllocate;
+            else if (status === "Frozen") frozen += amountToAllocate;
+            else if (status === "Deep Freeze") deepFreeze += amountToAllocate;
+            // else console.warn(`Unknown status '${status}' in percentage rule ${ruleId}`);
+            remainingBalance -= amountToAllocate;
+            processedRuleIds.add(ruleId);
+          }
+        } else {
+          // console.warn(`Invalid percentage value ${percentage} in rule ${ruleId}`);
+        }
+      } catch (e) {
+        console.error(`Error processing percentage rule ${ruleId}:`, e);
+      }
+    }
+  }
+
+  // 3. Apply the final 'remaining' rule
+  const remainingRule = rules.find((rule) => rule?.id === "remaining");
+  if (remainingRule) {
+    const status = remainingRule.status || "Liquid"; // Default to Liquid
+    if (remainingBalance > 0) {
+      if (status === "Liquid") liquid += remainingBalance;
+      else if (status === "Frozen") frozen += remainingBalance;
+      else if (status === "Deep Freeze") deepFreeze += remainingBalance;
+      // else console.warn(`Unknown status '${status}' in remaining rule`);
+    }
+  } else if (remainingBalance > 0) {
+    // console.warn("'Remaining' rule missing, defaulting leftover balance to Liquid.");
+    liquid += remainingBalance; // Default remaining to liquid if rule is missing
+  }
+
+  // Calculate percentages (handle division by zero)
+  const totalBalanceForPercent = totalBalanceMilliunits || 1; // Avoid division by zero
+  const liquidPercent = Math.round((liquid / totalBalanceForPercent) * 100);
+  const frozenPercent = Math.round((frozen / totalBalanceForPercent) * 100);
+  // Assign remaining percentage to deep freeze to ensure total is 100% due to rounding - IMPROVED LOGIC
+  const deepFreezePercent = Math.max(0, 100 - liquidPercent - frozenPercent); // Ensure non-negative
+
+  return {
+    liquid_milliunits: liquid,
+    frozen_milliunits: frozen,
+    deep_freeze_milliunits: deepFreeze,
+    liquid_percent: liquidPercent,
+    frozen_percent: frozenPercent,
+    deep_freeze_percent: deepFreezePercent,
+  };
+}
+// --- End Frontend Implementation ---
 
 function AccountsPage() {
   const [accounts, setAccounts] = useState([]);
@@ -46,16 +145,15 @@ function AccountsPage() {
       console.log("AccountsPage fetched allData:", allData);
 
       const processedAccounts = (allData.accounts || []).map((acc, index) => {
-        // --- Start Logging ---
-        try {
-          console.log(
-            `Processing account ${index} (raw):`,
-            JSON.stringify(acc)
-          );
-        } catch (e) {
-          console.error(`Error logging raw account ${index}:`, acc, e);
-        }
-        // --- End Logging ---
+        // <<< ACCOUNTS PAGE PROCESSING LOG >>>
+        console.log(`---> Processing Account ${index}:`, acc?.name, acc?.id);
+        console.log(`     Raw acc data:`, JSON.parse(JSON.stringify(acc))); // Deep copy
+        const allocationRules = acc.allocation_rules || []; // Declare allocationRules here
+        console.log(
+          `     Extracted allocationRules:`,
+          JSON.parse(JSON.stringify(allocationRules))
+        ); // Deep copy
+        // <<< END LOGGING >>>
 
         const id =
           acc && acc.id
@@ -63,22 +161,35 @@ function AccountsPage() {
             : `temp-${Math.random().toString(36).substring(2, 15)}`;
         const isYnabAccount =
           "account" in acc && typeof acc.account === "object";
-        let balance = 0;
-        if (isYnabAccount && acc.account) {
+
+        // --- Refactored Balance Extraction ---
+        let balance = null; // Start with null
+
+        // 1. Check top-level fields, prioritizing cleared_balance
+        balance =
+          acc.cleared_balance ??
+          acc.balance ??
+          acc.uncleared_balance ??
+          acc.balance_milliunits ??
+          acc.current_balance_milliunits ??
+          acc.current_balance;
+
+        // 2. Check within details as fallback if balance is still null or undefined
+        if ((balance === null || balance === undefined) && acc.details) {
+          // Prioritize cleared_balance within details too
           balance =
-            acc.account.balance ??
-            acc.account.cleared_balance ??
-            acc.account.uncleared_balance ??
-            0;
-        } else {
-          balance =
-            acc.balance ??
-            acc.balance_milliunits ??
-            acc.current_balance_milliunits ??
-            acc.current_balance ??
-            acc.cleared_balance ??
-            0;
+            acc.details.cleared_balance ??
+            acc.details.balance ??
+            acc.details.uncleared_balance ??
+            acc.details.balance_milliunits ??
+            acc.details.current_balance_milliunits ??
+            acc.details.current_balance;
         }
+
+        // 3. Default to 0 if still null or undefined after all checks
+        balance = balance ?? 0;
+        // --- End Refactored Balance Extraction ---
+
         const hasManualDetails =
           acc.details && Object.keys(acc.details).length > 0;
         const bank =
@@ -86,74 +197,57 @@ function AccountsPage() {
           acc.bank ||
           (isYnabAccount && acc.account && acc.account.bank) ||
           null;
-        let accountType = null;
-        if (hasManualDetails) {
-          if (acc.details.account_type) accountType = acc.details.account_type;
-          else if (acc.details.type) accountType = acc.details.type;
-        }
-        if (!accountType) {
-          if (acc.type) accountType = acc.type;
-          else if (acc.account?.type) accountType = acc.account.type;
-          else accountType = "Unknown";
-        }
-        let liquid = 0,
-          frozen = 0,
-          deepFreeze = 0;
-        if (acc.allocation_rules) {
-          liquid = acc.allocation_rules.liquid || 0;
-          frozen = acc.allocation_rules.frozen || 0;
-          deepFreeze = acc.allocation_rules.deep_freeze || 0;
-        }
 
-        // --- Start Logging ---
+        // --- Corrected Account Type Logic ---
+        let accountType = null;
+        // Prioritize manually set account_type from the merged backend data
+        if (acc.account_type) {
+          accountType = acc.account_type;
+        } else if (acc.type) {
+          // Fallback to YNAB type
+          accountType = acc.type;
+        } else if (acc.account?.type) {
+          // Fallback for older structures if needed
+          accountType = acc.account.type;
+        }
+        // Final fallback
+        accountType = accountType || "Unknown";
+        // --- End Corrected Logic ---
+
+        // Explicitly create the object for the DataGrid
         const returnObj = {
-          ...acc,
-          id,
+          // Fields used by columns/getters/formatters directly:
+          id: id,
+          name: acc.name || "Unnamed Account", // Needed for sorting/display
           balance: balance,
           bank: bank,
           account_type: accountType,
-          allocation_liquid: liquid,
-          allocation_frozen: frozen,
-          allocation_deep_freeze: deepFreeze,
+          // Use allocation values directly from backend response
+          allocation_liquid_milliunits: acc.liquid_milliunits ?? 0,
+          allocation_frozen_milliunits: acc.frozen_milliunits ?? 0,
+          allocation_deep_freeze_milliunits: acc.deep_freeze_milliunits ?? 0,
           is_ynab: isYnabAccount,
-          details: acc && acc.details ? acc.details : {},
+          // Fields needed indirectly (e.g., by getDisplayName or Edit Modal):
+          include_bank_in_name:
+            acc.details?.include_bank_in_name ??
+            acc.include_bank_in_name ??
+            false,
+          last_4_digits: acc.last_4_digits || acc.details?.last_4_digits || "", // For edit modal
+          notes: acc.notes || acc.details?.notes || "", // For edit modal
+          allocation_rules:
+            acc.allocation_rules || acc.details?.allocation_rules || [], // Ensure rules are passed to modal
+          details: acc.details || {}, // Pass details for the modal
+          account: acc.account, // Pass original YNAB account if it exists
         };
-        try {
-          console.log(
-            `Processed account ${index} (output):`,
-            JSON.stringify(returnObj)
-          );
-        } catch (e) {
-          console.error(
-            `Error logging processed account ${index}:`,
-            returnObj,
-            e
-          );
-        }
-        // --- End Logging ---
         return returnObj;
       });
 
-      // --- Start Logging ---
-      try {
-        console.log(
-          "Final processedAccounts array before sort:",
-          JSON.stringify(processedAccounts)
-        );
-      } catch (e) {
-        console.error(
-          "Error logging final processedAccounts array:",
-          processedAccounts,
-          e
-        );
-      }
-      // --- End Logging ---
-
-      setAccounts(
-        processedAccounts.sort((a, b) =>
-          getDisplayName(a).localeCompare(getDisplayName(b))
-        )
+      // Create a new sorted array reference to ensure DataGrid updates
+      const sortedAccounts = [...processedAccounts].sort((a, b) =>
+        getDisplayName(a).localeCompare(getDisplayName(b))
       );
+      setAccounts(sortedAccounts);
+
       setBanks(allData.banks || []);
       setAccountTypes(allData.account_types || []);
     } catch (err) {
@@ -202,18 +296,26 @@ function AccountsPage() {
     const method = isUpdating ? "PUT" : "POST";
 
     try {
+      // Log the object *before* stringify
+      console.log(
+        `Payload object before stringify:`,
+        JSON.parse(JSON.stringify(accountDetails)) // Deep copy for logging
+      );
+
+      // Log the stringified version *just before* sending
+      const bodyString = JSON.stringify(accountDetails);
+      console.log(`Stringified body being sent:`, bodyString);
+
       const result = await callApi(endpoint, {
         method: method,
-        body: JSON.stringify(accountDetails),
+        body: bodyString,
       });
       console.log(`Save account result for ID ${accountId}:`, result);
 
-      await fetchAll();
-      notify(
-        `Account ${isUpdating ? "updated" : "added"} successfully!`,
-        "success"
-      );
+      notify(`Account details saved successfully!`, "success");
       handleCloseAccountModal();
+      // Ensure data is refetched after saving
+      await fetchAll();
     } catch (err) {
       console.error(
         `Error ${isUpdating ? "updating" : "adding"} account:`,
@@ -258,14 +360,28 @@ function AccountsPage() {
   };
 
   const formatCurrency = (milliunits) => {
-    if (milliunits == null || isNaN(milliunits)) return "N/A";
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-    }).format(milliunits / 1000);
+    // console.log(
+    //   `formatCurrency received: ${milliunits} (Type: ${typeof milliunits})`
+    // );
+    if (milliunits == null || isNaN(milliunits)) {
+      // console.log("formatCurrency returning N/A due to null or NaN input.");
+      return "N/A";
+    }
+    try {
+      const formatted = new Intl.NumberFormat("en-US", {
+        style: "currency",
+        currency: "USD",
+      }).format(milliunits / 1000);
+      // console.log(`formatCurrency output: ${formatted}`); // Optional: log output too
+      return formatted;
+    } catch (e) {
+      console.error(`Error formatting currency for value ${milliunits}:`, e);
+      return "Error"; // Return distinct error string
+    }
   };
 
   const formatPercent = (value) => {
+    console.log(`formatPercent received: ${value} (Type: ${typeof value})`); // Add log
     if (value == null || isNaN(value)) return "N/A";
     return `${Number(value).toFixed(0)}%`;
   };
@@ -300,12 +416,8 @@ function AccountsPage() {
         if (!params || !params.row) {
           return null;
         }
-        return (
-          <Box sx={{ display: "flex", alignItems: "center" }}>
-            {getAccountIcon(params.row.account_type)}
-            <Typography sx={{ ml: 1 }}>{getDisplayName(params.row)}</Typography>
-          </Box>
-        );
+        // Just return the name, which includes the YNAB emoji
+        return <Typography>{getDisplayName(params.row)}</Typography>;
       },
     },
     {
@@ -313,8 +425,9 @@ function AccountsPage() {
       headerName: "Type",
       minWidth: 120,
       flex: 1,
-      valueGetter: (params) =>
-        (params && params.row ? params.row.account_type : null) || "N/A",
+      valueGetter: (value, row) => {
+        return row?.account_type ?? "N/A";
+      },
     },
     {
       field: "balance",
@@ -322,34 +435,42 @@ function AccountsPage() {
       type: "number",
       minWidth: 130,
       flex: 1,
-      valueFormatter: (params) => formatCurrency(params.value),
+      valueFormatter: (value) => {
+        // Log the value received by the formatter
+        // console.log("ValueFormatter received value:", value);
+        // Use the existing formatCurrency function
+        return formatCurrency(value ?? null);
+      },
       align: "right",
       headerAlign: "right",
     },
     {
-      field: "allocation_liquid",
+      field: "allocation_liquid_milliunits",
       headerName: "Liquid",
       type: "number",
-      width: 80,
-      valueFormatter: (params) => formatPercent(params.value),
+      width: 100,
+      valueGetter: (value, row) => row?.allocation_liquid_milliunits,
+      valueFormatter: (value) => formatCurrency(value ?? null),
       align: "right",
       headerAlign: "right",
     },
     {
-      field: "allocation_frozen",
+      field: "allocation_frozen_milliunits",
       headerName: "Frozen",
       type: "number",
-      width: 80,
-      valueFormatter: (params) => formatPercent(params.value),
+      width: 100,
+      valueGetter: (value, row) => row?.allocation_frozen_milliunits,
+      valueFormatter: (value) => formatCurrency(value ?? null),
       align: "right",
       headerAlign: "right",
     },
     {
-      field: "allocation_deep_freeze",
+      field: "allocation_deep_freeze_milliunits",
       headerName: "Deep Freeze",
       type: "number",
       width: 110,
-      valueFormatter: (params) => formatPercent(params.value),
+      valueGetter: (value, row) => row?.allocation_deep_freeze_milliunits,
+      valueFormatter: (value) => formatCurrency(value ?? null),
       align: "right",
       headerAlign: "right",
     },
@@ -431,7 +552,13 @@ function AccountsPage() {
         }}
       >
         <Typography variant="h4">Accounts</Typography>
-        <Box></Box>
+        <Button
+          variant="contained"
+          startIcon={<AddIcon />}
+          onClick={handleOpenAddModal}
+        >
+          Add Manual Account
+        </Button>
       </Box>
 
       <Paper sx={{ flexGrow: 1, width: "100%", overflow: "hidden" }}>
@@ -449,14 +576,14 @@ function AccountsPage() {
         />
       </Paper>
 
-      {showEditModal && selectedAccount && (
-        <EditAccountModal
-          open={showEditModal}
+      {(showEditModal || showAddModal) && (
+        <AccountFormModal
+          open={showEditModal || showAddModal}
           onClose={handleCloseAccountModal}
           account={selectedAccount}
           banks={banks}
           accountTypes={accountTypes}
-          onUpdate={handleSaveAccount}
+          onSave={handleSaveAccount}
         />
       )}
     </Box>

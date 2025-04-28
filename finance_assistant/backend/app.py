@@ -107,6 +107,9 @@ def handle_ingress_request():
     """
     Detect and redirect ingress-prefixed API calls to their proper handlers
     """
+    # Log all incoming requests HERE
+    _LOGGER.info(f"<<< Before Request >>> Path: {request.path}, Ingress Header: {request.headers.get('X-Ingress-Path')}, Remote: {request.remote_addr}")
+
     ingress_path = request.headers.get('X-Ingress-Path', '')
     if ingress_path and request.path.startswith(ingress_path):
         # If this is a request to an API endpoint via the ingress path
@@ -120,9 +123,10 @@ def handle_ingress_request():
 
 # --- Simple Ping Test Route (on Blueprint) ---
 @api_bp.route('/ping')
-@supervisor_token_required
+# @supervisor_token_required # REMOVED - Ping should not require auth
 def ping():
-    _LOGGER.info("Received request for /api/ping")
+    _LOGGER.info("--- PING ENDPOINT HIT --- (via /api/ping)") # Added specific logging
+    _LOGGER.info("Received request for /ping (no prefix)") # Updated log message
     return jsonify({"message": "pong"})
 
 # Testing route at the root level - no authentication needed
@@ -279,7 +283,7 @@ def get_all_data():
         manual_credit_cards_data = data_manager.get_manual_credit_cards()
 
         # --- Process Accounts, Assets, Liabilities, Credit Cards ---
-        regular_account_types = {'checking', 'savings', 'cash'}
+        regular_account_types = {'Checking', 'Savings', 'Cash'}
         potential_ynab_asset_types = {'tracking', 'investmentAccount', 'otherAsset'}
         potential_liability_types = {'otherLiability', 'mortgage', 'autoLoan', 'studentLoan', 'personalLoan', 'lineOfCredit'}
         potential_credit_card_types = {'creditCard'}
@@ -293,19 +297,25 @@ def get_all_data():
             if not ynab_id: continue
             acc_type = acc_dict.get('type')
 
-            # Process Regular Accounts
-            if acc_type in regular_account_types:
+            # Process Regular Accounts (case-insensitive)
+            if acc_type and acc_type.lower() in {'checking', 'savings', 'cash'}:
                 # Pass the YNAB account type to get_manual_account_details
                 manual_details = data_manager.get_manual_account_details(ynab_id, account_type=acc_type)
                 allocation_rules = manual_details.get('allocation_rules', []) # Rules now have correct default status
                 allocations = calculate_allocations(acc_dict.get('balance', 0), allocation_rules)
+
+                # Determine final account type (prioritize manual, fallback to Title Case YNAB type)
+                final_account_type = manual_details.get('account_type', acc_type.title() if acc_type else "Unknown")
+
+                # Build combined account object
                 combined = {
                     **acc_dict,
                     'bank': manual_details.get('bank'),
                     'last_4_digits': manual_details.get('last_4_digits'),
                     'include_bank_in_name': manual_details.get('include_bank_in_name', True),
                     'notes': manual_details.get('note', acc_dict.get('note')),
-                    'account_type': manual_details.get('account_type', acc_type), # Use manual type override if set
+                    'account_type': final_account_type, # Use determined type
+                    'type': final_account_type, # Keep type consistent
                     'allocation_rules': allocation_rules,
                     **allocations # Include calculated liquid/frozen/deep_freeze
                 }
@@ -434,6 +444,7 @@ def get_all_data():
             "rewards_payees": data_manager.get_rewards_payees(), # Added
             "asset_types": data_manager.get_asset_types(),
             "banks": data_manager.get_banks(),
+            "account_types": data_manager.get_account_types(), # Added missing account types
             "liability_types": data_manager.get_liability_types()
         }
         # Simplified log message
@@ -467,7 +478,7 @@ def get_accounts():
             # Continue with empty list if YNAB fetch fails
 
         combined_accounts = []
-        regular_account_types = {'checking', 'savings', 'cash'}
+        regular_account_types = {'Checking', 'Savings', 'Cash'}
 
         # Process regular accounts from YNAB
         for acc in ynab_accounts_raw:
@@ -477,12 +488,15 @@ def get_accounts():
             if not ynab_id: continue
             acc_type = acc_dict.get('type')
 
-            # Only include regular accounts
-            if acc_type in regular_account_types:
+            # Only include regular accounts (case-insensitive check)
+            if acc_type and acc_type.lower() in {'checking', 'savings', 'cash'}:
                 # Get manual details for this account
                 manual_details = data_manager.get_manual_account_details(ynab_id, account_type=acc_type)
                 allocation_rules = manual_details.get('allocation_rules', [])
                 allocations = calculate_allocations(acc_dict.get('balance', 0), allocation_rules)
+
+                # Determine final account type (prioritize manual, fallback to Title Case YNAB type)
+                final_account_type = manual_details.get('account_type', acc_type.title() if acc_type else "Unknown")
 
                 # Build combined account object
                 combined = {
@@ -492,8 +506,8 @@ def get_accounts():
                         'last_4_digits': manual_details.get('last_4_digits'),
                         'include_bank_in_name': manual_details.get('include_bank_in_name', True),
                         'notes': manual_details.get('notes', acc_dict.get('note')),
-                        'account_type': manual_details.get('account_type', acc_type),
-                        'type': manual_details.get('account_type', acc_type),
+                        'account_type': final_account_type, # Use determined type
+                        'type': final_account_type, # Keep type consistent
                         'allocation_rules': allocation_rules,
                         **allocations
                     }
@@ -579,6 +593,15 @@ def direct_get_manual_account_ingress(addon_id, ynab_account_id):
 @app.route('/api/hassio_ingress/<path:addon_id>/api/manual_account/<ynab_account_id>', methods=['POST', 'PUT'])
 def direct_save_manual_account_ingress(addon_id, ynab_account_id):
     """Simplified direct endpoint for saving manual account details."""
+    # <<< ADD LOGGING HERE >>>
+    _LOGGER.info(f"--- direct_save_manual_account_ingress START for {ynab_account_id} ---")
+    raw_data = request.data
+    _LOGGER.info(f"Raw request data (ingress): {raw_data}")
+    try:
+        _LOGGER.info(f"Attempting to parse JSON (ingress): {request.get_json()}")
+    except Exception as json_err:
+        _LOGGER.error(f"Error parsing JSON (ingress): {json_err}")
+    # <<< END LOGGING >>>
     _LOGGER.info(f"🚨 DIRECT HANDLER - manual_account {request.method} for {ynab_account_id}")
 
     try:
@@ -787,6 +810,15 @@ def get_manual_account(ynab_account_id):
 @supervisor_token_required
 def save_manual_account(ynab_account_id):
     """Save or update manual details for a YNAB account."""
+    # <<< ADD LOGGING HERE >>>
+    _LOGGER.info(f"--- save_manual_account START for {ynab_account_id} ---")
+    raw_data = request.data
+    _LOGGER.info(f"Raw request data: {raw_data}")
+    try:
+        _LOGGER.info(f"Attempting to parse JSON: {request.get_json()}")
+    except Exception as json_err:
+        _LOGGER.error(f"Error parsing JSON: {json_err}")
+    # <<< END LOGGING >>>
     _LOGGER.debug(f"{request.method} manual_account/{ynab_account_id} received")
 
     # Validate request format
@@ -839,6 +871,10 @@ def save_manual_account(ynab_account_id):
 
         _LOGGER.debug(f"Saved details with keys: {list(saved_details.keys())}")
         _LOGGER.debug(f"Account type fields after save: account_type={saved_details.get('account_type')}, type={saved_details.get('type')}")
+
+        # <<< ADD EXTRA LOGGING HERE >>>
+        _LOGGER.info(f"💾 Returning details after save: {saved_details}")
+        # <<< END EXTRA LOGGING >>>
 
         return jsonify(details=saved_details)
     except Exception as e:

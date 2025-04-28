@@ -58,8 +58,9 @@ class DataManager:
 
         # Initialize files if they don't exist
         self._initialize_file(ACCOUNTS_FILE, {})
-        self._initialize_file(BANKS_FILE, [])
-        self._initialize_file(ACCOUNT_TYPES_FILE, ["Checking", "Savings", "Cash"])
+        # Initialize banks.json with a default bank {id, name}
+        self._initialize_file(BANKS_FILE, [{"id": "Default Bank", "name": "Default Bank"}])
+        self._initialize_file(ACCOUNT_TYPES_FILE, [{"id": "Checking", "name": "Checking"}, {"id": "Savings", "name": "Savings"}, {"id": "Cash", "name": "Cash"}])
         # Initialize asset files
         self._initialize_file(ASSETS_FILE, {})
         self._initialize_file(ASSET_TYPES_FILE, ["Stocks", "Retirement Plan"])
@@ -212,7 +213,7 @@ class DataManager:
         # Determine the default status for the remaining rule
         # Prioritize manual account type, then YNAB type
         effective_account_type = details.get('account_type', account_type)
-        default_status = "Frozen" if effective_account_type and effective_account_type.lower() == "savings" else "Liquid"
+        default_status = "Frozen" if effective_account_type and effective_account_type == "Savings" else "Liquid"
         _LOGGER.debug(f"Account {ynab_account_id}: Effective type '{effective_account_type}', Default remaining status: '{default_status}'")
 
         needs_save = False # Flag if we modified the rules and need to save back
@@ -300,18 +301,31 @@ class DataManager:
             if 'account_type' in details:
                 # Strip whitespace and ensure proper capitalization
                 original_account_type = details['account_type']
-                normalized_type = details['account_type'].strip()
-
-                # Check against existing account types for exact case match
-                existing_types = self.get_account_types()
-                case_match = next((t for t in existing_types if t.lower() == normalized_type.lower()), None)
-
-                if case_match:
-                    # Use the existing case version to maintain consistency
-                    details['account_type'] = case_match
-                    _LOGGER.debug(f"Account type case-matched to existing type: '{original_account_type}' → '{case_match}'")
+                # Ensure it's a string before stripping
+                if not isinstance(original_account_type, str):
+                    _LOGGER.error(f"Invalid type for 'account_type' received: {type(original_account_type)}. Value: {original_account_type}")
+                    # Decide how to handle: return False, default, raise error?
+                    # For now, let's try to extract name if it looks like our object format
+                    if isinstance(original_account_type, dict) and 'name' in original_account_type:
+                        normalized_type = original_account_type['name'].strip()
+                        _LOGGER.warning("Received account_type as object, extracted name.")
+                    else:
+                        return False # Cannot proceed
                 else:
-                    # If no match, apply standard capitalization
+                     normalized_type = original_account_type.strip()
+
+
+                # Check against existing account types (which are dicts) for exact case match on name
+                existing_types = self.get_account_types()
+                # Compare incoming string with the 'name' field of the existing type dicts
+                case_match_obj = next((t_obj for t_obj in existing_types if isinstance(t_obj, dict) and t_obj.get('name', '').lower() == normalized_type.lower()), None)
+
+                if case_match_obj:
+                    # Use the existing case version (name) from the matched object
+                    details['account_type'] = case_match_obj['name']
+                    _LOGGER.debug(f"Account type case-matched to existing type: '{original_account_type}' → '{details['account_type']}'")
+                else:
+                    # If no match, apply standard capitalization to the incoming string
                     details['account_type'] = normalized_type.capitalize()
                     _LOGGER.debug(f"Normalized account_type with standard capitalization: '{original_account_type}' → '{details['account_type']}'")
 
@@ -322,20 +336,38 @@ class DataManager:
             elif 'type' in details:
                 # If only type is provided, ensure it's also stored as account_type with proper formatting
                 original_type = details['type']
-                normalized_type = details['type'].strip()
+                 # Ensure it's a string before stripping
+                if not isinstance(original_type, str):
+                    _LOGGER.error(f"Invalid type for 'type' received: {type(original_type)}. Value: {original_type}")
+                    if isinstance(original_type, dict) and 'name' in original_type:
+                        normalized_type = original_type['name'].strip()
+                        _LOGGER.warning("Received type as object, extracted name.")
+                    else:
+                        return False # Cannot proceed
+                else:
+                    normalized_type = original_type.strip()
 
-                # Check against existing account types for exact case match
+                # Check against existing account types (which are dicts)
                 existing_types = self.get_account_types()
-                case_match = next((t for t in existing_types if t.lower() == normalized_type.lower()), None)
+                # Compare incoming string with the 'name' field of the existing type dicts
+                case_match_obj = next((t_obj for t_obj in existing_types if isinstance(t_obj, dict) and t_obj.get('name', '').lower() == normalized_type.lower()), None)
 
-                if case_match:
-                    details['type'] = case_match
-                    details['account_type'] = case_match
-                    _LOGGER.debug(f"Type field case-matched to existing type: '{original_type}' → '{case_match}'")
+                if case_match_obj:
+                    details['type'] = case_match_obj['name']
+                    details['account_type'] = case_match_obj['name']
+                    _LOGGER.debug(f"Type field case-matched to existing type: '{original_type}' → '{case_match_obj['name']}'")
                 else:
                     details['type'] = normalized_type.capitalize()
                     details['account_type'] = details['type']
                     _LOGGER.debug(f"Normalized type field with standard capitalization: '{original_type}' → '{details['type']}'")
+
+            # Ensure final account_type is properly capitalized before merging
+            if 'account_type' in details and isinstance(details['account_type'], str):
+                details['account_type'] = self._title_case(details['account_type'])
+                _LOGGER.debug(f"Applied final title case normalization: '{details['account_type']}'")
+                # Ensure 'type' is also updated if it exists
+                if 'type' in details:
+                    details['type'] = details['account_type']
 
             # If allocation_rules are in the payload, validate them
             if 'allocation_rules' in details:
@@ -356,6 +388,20 @@ class DataManager:
             _LOGGER.info(f"💾 Merging new details into current details")
             current_details.update(details)
 
+            # <<< MOVE CAPITALIZATION HERE >>>
+            # Ensure final account_type is properly capitalized *after* merging
+            if 'account_type' in current_details and isinstance(current_details['account_type'], str):
+                current_details['account_type'] = self._title_case(current_details['account_type'])
+                _LOGGER.debug(f"Applied final title case normalization after merge: '{current_details['account_type']}'")
+                # Ensure 'type' is also updated if it exists
+                if 'type' in current_details:
+                    current_details['type'] = current_details['account_type']
+
+            # Explicitly overwrite allocation_rules if they were provided in the payload
+            if 'allocation_rules' in details:
+                _LOGGER.debug(f"💾 Explicitly updating allocation_rules from payload.")
+                current_details['allocation_rules'] = details['allocation_rules']
+
             # If allocation_rules are now missing after merge (e.g., empty payload overwrote them?),
             # re-initialize them. This shouldn't happen with dict.update but is a safeguard.
             if 'allocation_rules' not in current_details or not isinstance(current_details.get('allocation_rules'), list):
@@ -368,6 +414,9 @@ class DataManager:
 
             _LOGGER.info(f"💾 Final account details to be saved: {current_details}")
             accounts[ynab_account_id] = current_details
+            # <<< ADD LOGGING HERE >>>
+            _LOGGER.info(f"💾 Just before write_json: allocation_rules = {current_details.get('allocation_rules')}")
+            # <<< END LOGGING >>>
             self._write_json(ACCOUNTS_FILE, accounts)
             _LOGGER.info(f"💾 Successfully saved details for account {ynab_account_id}")
             return True
