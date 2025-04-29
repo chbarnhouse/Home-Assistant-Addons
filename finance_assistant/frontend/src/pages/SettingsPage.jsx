@@ -47,6 +47,8 @@ function SettingsPage() {
         rewardsCategoriesData,
         rewardsPayeesData,
         pointsProgramsData,
+        assetTypesData,
+        liabilityTypesData,
       ] = await Promise.all([
         callApi("banks"),
         callApi("account_types"),
@@ -54,20 +56,14 @@ function SettingsPage() {
         callApi("rewards_categories"),
         callApi("rewards_payees"),
         callApi("points_programs"),
+        callApi("asset_types"),
+        callApi("liability_types"),
       ]);
 
       setBanks(banksData || []);
       setAccountTypes(accountTypesData || []);
-      setLiabilityTypes(
-        Array.isArray(accountTypesData.liability_types)
-          ? accountTypesData.liability_types
-          : []
-      );
-      setAssetTypes(
-        Array.isArray(accountTypesData.asset_types)
-          ? accountTypesData.asset_types
-          : []
-      );
+      setLiabilityTypes(liabilityTypesData || []);
+      setAssetTypes(assetTypesData || []);
       setPaymentMethods(paymentMethodsData || []);
       setRewardsCategories(rewardsCategoriesData || []);
       setRewardsPayees(rewardsPayeesData || []);
