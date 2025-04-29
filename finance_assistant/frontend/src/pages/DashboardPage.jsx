@@ -17,8 +17,8 @@ import RewardsOptimizer from "../components/RewardsOptimizer"; // <-- Import the
 // Helper to format currency (consider moving to a utils file)
 const formatCurrency = (value, isMilliunits = false) => {
   if (value == null || isNaN(value)) return "$0.00";
-  const numericValue = isMilliunits ? value / 1000.0 : value;
-  // Use minimumFractionDigits: 0 for whole dollars if desired, but keep 2 for cents
+  // This formatter now expects DOLLARS. Calculations happen before calling this.
+  const numericValue = value;
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
@@ -65,140 +65,118 @@ function DashboardPage() {
         ? data.liabilities
         : [];
       const accounts = Array.isArray(data.accounts) ? data.accounts : [];
+      // Get type maps for lookups
+      const assetTypes = Array.isArray(data.asset_types)
+        ? data.asset_types
+        : [];
+      const liabilityTypes = Array.isArray(data.liability_types)
+        ? data.liability_types
+        : [];
 
-      // Sum asset values - Restore calculation
-      const totalAssets = assets.reduce((sum, asset) => {
-        // Check if asset is a valid object and has a 'value' property
-        if (
-          !asset ||
-          typeof asset !== "object" ||
-          typeof asset.value === "undefined"
-        ) {
-          console.warn("Skipping invalid asset item:", asset); // Log problematic item
-          return sum;
+      // --- Calculate summaries --- //
+
+      let totalAssets = 0;
+      const assetsByType = {};
+      assets.forEach((asset) => {
+        if (!asset || typeof asset !== "object") return;
+        let valueInDollars = 0;
+        if (asset.is_ynab && typeof asset.balance === "number") {
+          valueInDollars = asset.balance / 1000.0;
+        } else if (!asset.is_ynab) {
+          // Handle potential manual fields (assuming dollars)
+          if (typeof asset.balance === "number") valueInDollars = asset.balance;
+          else if (typeof asset.value === "number")
+            valueInDollars = asset.value;
+          else if (typeof asset.current_value === "number")
+            valueInDollars = asset.current_value;
         }
-        const value = parseFloat(asset.value);
-        return sum + (isNaN(value) ? 0 : value);
-      }, 0);
+        if (isNaN(valueInDollars)) valueInDollars = 0;
+        totalAssets += valueInDollars;
 
-      // Sum liability values - Restore calculation
-      const totalLiabilities = liabilities.reduce((sum, liability) => {
-        // Check if liability is a valid object and has a 'value' property
-        if (
-          !liability ||
-          typeof liability !== "object" ||
-          typeof liability.value === "undefined"
-        ) {
-          console.warn("Skipping invalid liability item:", liability); // Log problematic item
-          return sum;
+        // For breakdown:
+        const typeObj = assetTypes.find((t) => t && t.id === asset.type_id);
+        const typeName = typeObj ? typeObj.name : asset.type || "Unknown";
+        assetsByType[typeName] = (assetsByType[typeName] || 0) + valueInDollars;
+      });
+
+      let totalLiabilities = 0;
+      const liabilitiesByType = {};
+      liabilities.forEach((liability) => {
+        if (!liability || typeof liability !== "object") return;
+        let valueInDollars = 0;
+        if (liability.is_ynab && typeof liability.balance === "number") {
+          valueInDollars = liability.balance / 1000.0;
+        } else if (!liability.is_ynab) {
+          // Handle potential manual fields (assuming dollars)
+          if (typeof liability.balance === "number")
+            valueInDollars = liability.balance;
+          else if (typeof liability.value === "number")
+            valueInDollars = liability.value;
+          else if (typeof liability.current_value === "number")
+            valueInDollars = liability.current_value;
         }
-        // Assume liability.value is in milliunits and convert to dollars
-        const valueInMilliunits = parseFloat(liability.value);
-        if (isNaN(valueInMilliunits)) return sum;
-        const valueInDollars = valueInMilliunits / 1000.0;
-        return sum + Math.abs(valueInDollars);
-      }, 0);
+        if (isNaN(valueInDollars)) valueInDollars = 0;
+        // Liabilities are negative, sum their absolute value
+        totalLiabilities += Math.abs(valueInDollars);
 
-      // Net worth calculation - Restore calculation
+        // For breakdown:
+        const typeObj = liabilityTypes.find(
+          (t) => t && t.id === liability.type_id
+        );
+        const typeName = typeObj ? typeObj.name : liability.type || "Unknown";
+        // Use absolute value for breakdown chart
+        liabilitiesByType[typeName] =
+          (liabilitiesByType[typeName] || 0) + Math.abs(valueInDollars);
+      });
+
       const netWorth = totalAssets - totalLiabilities;
 
-      // --- Try setting state ---
+      // --- State Updates --- //
       try {
-        setSummaryData({
-          // Re-enable with default values
-          totalAssets,
-          totalLiabilities,
-          netWorth,
-        });
+        setSummaryData({ totalAssets, totalLiabilities, netWorth });
 
-        // Process asset breakdown - Restore calculation & state update
-
-        const assetsByType = assets.reduce((acc, asset) => {
-          if (!asset) return acc;
-          const type = asset.type || "Unknown";
-          const value = parseFloat(asset.value);
-          if (isNaN(value)) return acc;
-
-          acc[type] = (acc[type] || 0) + value;
-          return acc;
-        }, {});
-
-        // Convert to array format for chart - Added check
-        let assetBreakdownData = [];
-        if (assetsByType && typeof assetsByType === "object") {
-          assetBreakdownData = Object.entries(assetsByType).map(
-            ([type, value]) => ({
-              name: type,
-              value: value,
-            })
-          );
-        }
+        // Convert breakdown objects to array format for charts
+        const assetBreakdownData = Object.entries(assetsByType).map(
+          ([name, value]) => ({ name, value })
+        );
         setAssetBreakdown(assetBreakdownData);
 
-        // Process liability breakdown - Restore calculation & state update
-
-        const liabilitiesByType = liabilities.reduce((acc, liability) => {
-          if (!liability) return acc;
-          const type = liability.type || liability.liability_type || "Unknown";
-          // Assume value is in milliunits, convert to dollars
-          const valueInMilliunits = parseFloat(liability.value);
-          if (isNaN(valueInMilliunits)) return acc;
-          const valueInDollars = valueInMilliunits / 1000.0;
-
-          acc[type] = (acc[type] || 0) + Math.abs(valueInDollars);
-          return acc;
-        }, {});
-
-        // Convert to array format for chart - Added check
-        let liabilityBreakdownData = [];
-        if (liabilitiesByType && typeof liabilitiesByType === "object") {
-          liabilityBreakdownData = Object.entries(liabilitiesByType).map(
-            ([type, value]) => ({
-              name: type,
-              value: value,
-            })
-          );
-        }
+        const liabilityBreakdownData = Object.entries(liabilitiesByType).map(
+          ([name, value]) => ({ name, value })
+        );
         setLiabilityBreakdown(liabilityBreakdownData);
 
-        // Get top accounts - Restore state setting
-        // We also comment out the state setting for now.
+        // Process top accounts
         let processedAccounts = [];
         if (Array.isArray(accounts)) {
-          // Ensure accounts is an array before processing
           processedAccounts = accounts
-            .filter((account) => account && typeof account === "object")
-            .map((account) => {
-              const balanceRaw = account.balance;
-              // Ensure balance is a number, store raw value (assumed milliunits)
-              const balanceNum =
-                typeof balanceRaw === "number" ? balanceRaw : 0;
-              return {
-                id: account.id || `temp-${Date.now()}-${Math.random()}`,
-                name: account.name || "Unnamed Account",
-                balance: isNaN(balanceNum) ? 0 : balanceNum, // Ensure balance is a valid number, default to 0 if NaN
-                account_type: account.account_type || account.type || "Unknown",
-              };
-            })
-            .sort((a, b) => {
-              // Defensive sort: ensure balances are numbers before comparing
-              const balanceA =
-                typeof a.balance === "number" ? Math.abs(a.balance) : 0;
-              const balanceB =
-                typeof b.balance === "number" ? Math.abs(b.balance) : 0;
-              return balanceB - balanceA;
-            }) // Sort by absolute balance
+            .filter(
+              (account) =>
+                account &&
+                typeof account === "object" &&
+                typeof account.balance === "number"
+            )
+            .map((account) => ({
+              id: account.id || `temp-${Date.now()}-${Math.random()}`,
+              name: account.name || "Unnamed Account",
+              // Convert balance to dollars here for sorting and display
+              balance: account.balance / 1000.0,
+              account_type: account.account_type || account.type || "Unknown",
+            }))
+            // Sort by absolute dollar balance
+            .sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance))
             .slice(0, 5); // Top 5 accounts
         }
-        setTopAccounts(processedAccounts); // Restore state update
+        setTopAccounts(processedAccounts); // Update state
 
-        console.log("State updated with summary, asset & liability breakdown."); // Update log message
+        console.log("Dashboard state updated successfully.");
       } catch (stateUpdateError) {
-        console.error("Error occurred during state updates:", stateUpdateError);
-        // Re-throw or set error state appropriately
+        console.error(
+          "Error occurred during dashboard state updates:",
+          stateUpdateError
+        );
         throw stateUpdateError; // Re-throw to be caught by the outer catch block
       }
-      // --- End state setting block ---
     } catch (err) {
       console.error("Error fetching dashboard data:", err);
       setError(
@@ -289,9 +267,7 @@ function DashboardPage() {
                 <Typography
                   variant="h5"
                   component="div"
-                  color={
-                    summaryData.netWorth >= 0 ? "success.main" : "error.main"
-                  }
+                  color={summaryData.netWorth < 0 ? "error" : "success.main"}
                 >
                   {formatCurrency(summaryData.netWorth)}
                 </Typography>
@@ -395,7 +371,7 @@ function DashboardPage() {
                         <ListItem sx={{ py: 0.5 }}>
                           <ListItemText
                             primary={account.name}
-                            secondary={formatCurrency(account.balance, true)}
+                            secondary={formatCurrency(account.balance)}
                             primaryTypographyProps={{
                               variant: "body2",
                               noWrap: true,

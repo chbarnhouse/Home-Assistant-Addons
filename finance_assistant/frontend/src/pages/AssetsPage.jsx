@@ -67,33 +67,37 @@ function AssetsPage() {
         // Ensure asset is an object
         const assetObj = asset || {};
         console.log(`Processing asset #${index}:`, assetObj);
+        const isYnab = !!assetObj.is_ynab;
 
         // Get name
-        const name =
-          assetObj.name || assetObj.account_name || `Asset ${index + 1}`;
+        const name = assetObj.name || `Asset ${index + 1}`;
 
-        // Use the type assigned by the backend (which includes mapping logic)
-        const assetType = assetObj.type || "Other";
+        // Find type name from ID
+        const typeObj = assetTypes.find((t) => t && t.id === assetObj.type_id);
+        const typeName = typeObj ? typeObj.name : assetObj.type || "Unknown";
 
-        // Get bank/institution
-        const bank = assetObj.bank || assetObj.institution_name || "N/A";
+        // Find bank name from ID
+        const bankObj = banks.find((b) => b && b.id === assetObj.bank_id);
+        const bankName = bankObj ? bankObj.name : assetObj.bank || "N/A";
 
         // YNAB assets store value in milliunits, manual assets use 'value' directly
-        let currentValue = null;
-        if (assetObj.is_ynab && typeof assetObj.balance === "number") {
-          currentValue = assetObj.balance / 1000.0; // Convert from milliunits
-          console.log(
-            `YNAB asset ${name} balance:`,
-            assetObj.balance,
-            "→",
-            currentValue
+        let currentValueInDollars = null;
+        if (isYnab && typeof assetObj.balance === "number") {
+          currentValueInDollars = assetObj.balance / 1000.0; // Convert from milliunits
+        } else if (!isYnab) {
+          // Handle manual asset value fields
+          if (typeof assetObj.balance === "number") {
+            currentValueInDollars = assetObj.balance;
+          } else if (typeof assetObj.value === "number") {
+            currentValueInDollars = assetObj.value;
+          } else if (typeof assetObj.current_value === "number") {
+            currentValueInDollars = assetObj.current_value;
+          }
+        } else {
+          console.warn(
+            `[YNAB Asset ${index}] Missing or invalid balance field:`,
+            assetObj.balance
           );
-        } else if (typeof assetObj.value === "number") {
-          currentValue = assetObj.value;
-          console.log(`Asset ${name} value:`, currentValue);
-        } else if (typeof assetObj.current_value === "number") {
-          currentValue = assetObj.current_value;
-          console.log(`Asset ${name} current_value:`, currentValue);
         }
 
         // Extract the last updated date
@@ -103,20 +107,17 @@ function AssetsPage() {
           assetObj.updated_at ||
           new Date().toISOString();
 
-        // Create the final processed asset
+        // Spread original object FIRST, then override specific fields
         const processedAsset = {
-          id:
-            assetObj.id ||
-            assetObj.account_id ||
-            `asset-${Date.now()}-${index}`,
-          name,
-          type: assetType,
-          bank,
-          value: currentValue,
-          value_updated_at: lastUpdated,
-          is_ynab: !!assetObj.is_ynab,
-          // Keep other properties
-          ...assetObj,
+          ...assetObj, // Spread first
+          id: assetObj.id || `asset-${Date.now()}-${index}`, // Ensure ID
+          name: name, // Ensure name
+          type: typeName, // Use calculated type name
+          bank: bankName, // Use calculated bank name
+          value: currentValueInDollars, // Use calculated dollar value
+          value_updated_at: lastUpdated, // Ensure consistent date field
+          is_ynab: isYnab,
+          // Other fields from ...assetObj are preserved
         };
 
         console.log(`Processed asset #${index}:`, processedAsset);
