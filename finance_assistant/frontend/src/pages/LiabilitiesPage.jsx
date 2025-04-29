@@ -108,6 +108,9 @@ function LiabilitiesPage() {
         // YNAB balance is in milliunits and negative
         if (isYnab && typeof liabObj.balance === "number") {
           currentBalance = liabObj.balance / 1000.0;
+        } else if (!isYnab && typeof liabObj.balance === "number") {
+          // Handle potential manual balance field (assume it's already in dollars)
+          currentBalance = liabObj.balance;
         } else if (typeof liabObj.value === "number") {
           currentBalance = liabObj.value; // Manual liabilities might use 'value'
         } else if (typeof liabObj.current_value === "number") {
@@ -116,7 +119,8 @@ function LiabilitiesPage() {
 
         // Find type name from ID
         const typeObj = typesArray.find((t) => t.id === liabObj.type_id);
-        const typeName = typeObj ? typeObj.name : liabObj.type || "Unknown"; // Fallback to old 'type' field or 'Unknown'
+        // Prioritize name from the matched type object (which should be Title Case)
+        const typeName = typeObj ? typeObj.name : liabObj.type || "Unknown";
 
         // Find bank name from ID (assuming banks are {id, name})
         const bankObj = banksArray.find((b) => b.id === liabObj.bank_id); // Use bank_id if available
