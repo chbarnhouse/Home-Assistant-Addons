@@ -310,9 +310,24 @@ def get_all_data():
             # Process Assets
             elif acc_type in potential_ynab_asset_types:
                 manual_details = manual_assets_dict.get(ynab_id, {})
+
+                # --- Default Asset Type Mapping ---
+                assigned_asset_type = manual_details.get('type') # Prioritize manually set type
+                if not assigned_asset_type:
+                    account_name_lower = acc_dict.get('name', '').lower()
+                    if acc_type == 'investmentAccount':
+                        if any(keyword in account_name_lower for keyword in ['401k', 'ira', 'retirement', 'roth']):
+                            assigned_asset_type = "Retirement Plan"
+                        else:
+                            assigned_asset_type = "Stocks"
+                    else: # otherAsset, tracking
+                        # Less certain, maybe use name keywords or default to Other?
+                        assigned_asset_type = acc_type # Fallback to raw YNAB type for now
+                # --- End Mapping ---
+
                 combined = {
                     'id': ynab_id, 'name': acc_dict.get('name'),
-                    'type': manual_details.get('type', acc_type),
+                    'type': assigned_asset_type, # Use mapped type
                     'bank': manual_details.get('bank'),
                     'value': acc_dict.get('balance', 0) / 1000.0,
                     'value_last_updated': acc_dict.get('last_modified_on'),
@@ -326,8 +341,26 @@ def get_all_data():
             # Process Liabilities
             elif acc_type in potential_liability_types:
                 manual_details = manual_liabilities_data.get(ynab_id, {})
+
+                # --- Default Liability Type Mapping ---
+                assigned_liability_type = manual_details.get('liability_type') # Prioritize manual
+                if not assigned_liability_type:
+                    if acc_type == 'studentLoan':
+                        assigned_liability_type = "Student Loan"
+                    elif acc_type == 'autoLoan':
+                        assigned_liability_type = "Auto Loan"
+                    elif acc_type == 'mortgage':
+                         assigned_liability_type = "Mortgage"
+                    elif acc_type == 'personalLoan':
+                         assigned_liability_type = "Personal Loan"
+                    else: # otherLiability, lineOfCredit
+                        assigned_liability_type = acc_type # Fallback to raw YNAB type
+                # --- End Mapping ---
+
                 combined = {
-                    **acc_dict, 'liability_type': manual_details.get('liability_type', acc_type),
+                    **acc_dict,
+                    'liability_type': assigned_liability_type, # Use mapped type
+                    'type': assigned_liability_type, # Ensure consistent field name for frontend if needed
                     'bank': manual_details.get('bank'), 'value': acc_dict.get('balance', 0),
                     'value_last_updated': acc_dict.get('last_modified_on'),
                     'interest_rate': manual_details.get('interest_rate'),

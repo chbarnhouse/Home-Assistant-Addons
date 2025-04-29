@@ -72,28 +72,8 @@ function AssetsPage() {
         const name =
           assetObj.name || assetObj.account_name || `Asset ${index + 1}`;
 
-        // Determine asset type
-        let assetType = "Other";
-        if (assetObj.type) {
-          assetType = assetObj.type;
-        } else if (assetObj.account_type) {
-          assetType = assetObj.account_type;
-        } else if (assetObj.asset_type) {
-          assetType = assetObj.asset_type;
-        }
-
-        // Special case for investment accounts and other tracking accounts
-        const isInvestment =
-          assetType === "investmentAccount" ||
-          assetObj.account_name?.toLowerCase().includes("invest");
-
-        const isOtherAsset = assetType === "otherAsset";
-        const isTracking =
-          assetType === "tracking" || assetType === "otherAsset";
-
-        if (isInvestment || isOtherAsset || isTracking) {
-          assetType = assetObj.type || assetObj.account_type || "otherAsset";
-        }
+        // Use the type assigned by the backend (which includes mapping logic)
+        const assetType = assetObj.type || "Other";
 
         // Get bank/institution
         const bank = assetObj.bank || assetObj.institution_name || "N/A";

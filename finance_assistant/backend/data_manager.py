@@ -61,11 +61,14 @@ class DataManager:
         # Initialize banks.json with a default bank {id, name}
         self._initialize_file(BANKS_FILE, [{"id": "Default Bank", "name": "Default Bank"}])
         self._initialize_file(ACCOUNT_TYPES_FILE, [{"id": "Checking", "name": "Checking"}, {"id": "Savings", "name": "Savings"}, {"id": "Cash", "name": "Cash"}])
+
+        # --- Initialize type files with defaults ---
+        self._ensure_default_types(ASSET_TYPES_FILE, ["Stocks", "Retirement Plan"])
+        self._ensure_default_types(LIABILITY_TYPES_FILE, ["Student Loan", "Auto Loan", "Personal Loan", "Mortgage"]) # Also ensure original defaults are there
+        # --- End type file initialization ---
+
         # Initialize asset files
         self._initialize_file(ASSETS_FILE, {})
-        self._initialize_file(ASSET_TYPES_FILE, ["Stocks", "Retirement Plan"])
-        # Initialize liability types file
-        self._initialize_file(LIABILITY_TYPES_FILE, ["Personal Loan", "Auto Loan", "Student Loan", "Mortgage"])
         # Initialize payment methods file
         self._initialize_file(PAYMENT_METHODS_FILE, [])
         # Initialize manual liabilities file (similar to accounts/assets)
@@ -88,6 +91,55 @@ class DataManager:
         if not os.path.exists(file_path):
             self._write_json(file_path, default_content)
             _LOGGER.info(f"Initialized data file: {file_path}")
+
+    def _ensure_default_types(self, file_path, default_types):
+        """Ensures a type file exists and contains the specified default types."""
+        data = []
+        file_exists = os.path.exists(file_path)
+        if file_exists:
+            try:
+                with open(file_path, 'r') as f:
+                    data = json.load(f)
+                if not isinstance(data, list):
+                    _LOGGER.warning(f"File {file_path} is not a list. Re-initializing with defaults.")
+                    data = [] # Reset if format is wrong
+                    file_exists = False # Treat as non-existent to force rebuild
+            except json.JSONDecodeError:
+                _LOGGER.error(f"Error decoding JSON from {file_path}. Re-initializing with defaults.")
+                data = []
+                file_exists = False # Treat as non-existent
+            except Exception as e:
+                _LOGGER.error(f"Unexpected error reading {file_path}: {e}. Re-initializing with defaults.")
+                data = []
+                file_exists = False # Treat as non-existent
+
+        # Normalize existing data to be a list of strings (names)
+        current_names = set()
+        if file_exists:
+             for item in data:
+                 if isinstance(item, dict) and 'name' in item:
+                      current_names.add(item['name'])
+                 elif isinstance(item, str):
+                      current_names.add(item)
+
+        needs_update = False
+        types_to_add = []
+        for default_name in default_types:
+            if default_name not in current_names:
+                types_to_add.append(default_name)
+                needs_update = True
+
+        if not file_exists or needs_update:
+            _LOGGER.info(f"Initializing or updating {file_path} with defaults: {default_types}")
+            # Add new default names to the existing names
+            updated_names = sorted(list(current_names.union(set(types_to_add))))
+
+            # Write back as a list of strings for simplicity now
+            # If complex objects are needed later, this needs adjustment
+            self._write_json(file_path, updated_names)
+            _LOGGER.info(f"Successfully wrote default types to {file_path}")
+        else:
+             _LOGGER.debug(f"File {file_path} exists and contains all default types.")
 
     def _read_json(self, file_path):
         try:
