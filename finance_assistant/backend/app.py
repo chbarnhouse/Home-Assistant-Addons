@@ -1032,13 +1032,27 @@ def get_manual_asset(ynab_account_id):
 @api_bp.route('/manual_asset/<ynab_account_id>', methods=['POST', 'PUT'])
 @supervisor_token_required
 def save_manual_asset(ynab_account_id):
-    if not request.is_json: return jsonify({"error": "Request must be JSON"}), 400
-    details = request.get_json()
-    if data_manager.save_manual_asset_details(ynab_account_id, details):
-        # TODO: If asset type is Stock and entity_id/shares provided, trigger YNAB update?
-        return jsonify({"success": True, "details": details}), 200
-    else:
-        return jsonify({"error": "Failed to save"}), 500
+    if not request.is_json:
+        _LOGGER.error(f"Save manual asset request for {ynab_account_id} rejected: Not JSON.")
+        return jsonify({"error": "Request must be JSON"}), 400
+    try:
+        details = request.get_json()
+        _LOGGER.info(f"Received details for manual asset {ynab_account_id}: {details}")
+        # --- TEMPORARY DEBUGGING ---
+        _LOGGER.warning("Bypassing actual save for debugging. Returning success.")
+        return jsonify({"success": True, "message": "DEBUG: Save bypassed", "details": details}), 200
+        # --- END DEBUGGING ---
+
+        # Original logic:
+        # if data_manager.save_manual_asset_details(ynab_account_id, details):
+        #     _LOGGER.info(f"Successfully processed save for manual asset {ynab_account_id}")
+        #     return jsonify({"success": True, "details": details}), 200
+        # else:
+        #     _LOGGER.error(f"Data manager failed saving manual asset {ynab_account_id}")
+        #     return jsonify({"error": "Failed to save"}), 500
+    except Exception as e:
+        _LOGGER.exception(f"Error processing save_manual_asset for {ynab_account_id}")
+        return jsonify({"error": f"Internal server error: {e}"}), 500
 
 @api_bp.route('/manual_asset/<ynab_account_id>', methods=['DELETE'])
 @supervisor_token_required
