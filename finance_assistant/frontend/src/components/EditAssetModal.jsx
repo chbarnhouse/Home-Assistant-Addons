@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback } from "react";
 import PropTypes from "prop-types";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
@@ -17,8 +17,10 @@ import { useSnackbar } from "../context/SnackbarContext"; // Import Snackbar hoo
 import ManageBanksButton from "./ManageBanksButton";
 import ManageAssetTypesButton from "./ManageAssetTypesButton";
 import FormHelperText from "@mui/material/FormHelperText";
+import { callApi } from "../utils/api"; // Import callApi
 
-const ASSETS_API = "/api/assets"; // Base API endpoint
+const ASSETS_API = "/api/assets"; // Base API endpoint for *manual* assets
+const MANUAL_ASSET_API = "/api/manual_asset"; // API for manual details (incl. YNAB linked)
 
 function EditAssetModal({
   open,
@@ -33,64 +35,107 @@ function EditAssetModal({
   const initialFormData = {
     name: "",
     type: "",
-    value: "",
+    type_id: "",
     bank: "",
+    bank_id: "",
     symbol: "",
     shares: "",
-    value_last_updated: "",
+    value: "",
   };
   const [formData, setFormData] = useState(initialFormData);
   const [isStock, setIsStock] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isFetchingDetails, setIsFetchingDetails] = useState(false);
   const [errors, setErrors] = useState({}); // For field-specific errors
   const { notify } = useSnackbar(); // Get notify function
 
-  // Populate form when assetToEdit changes or modal opens
-  useEffect(() => {
-    if (open && assetToEdit) {
+  const isYnabAsset = assetToEdit?.is_ynab || false;
+
+  // Fetch manual details when modal opens for a specific asset
+  const fetchManualDetails = useCallback(async () => {
+    if (!open || !assetToEdit?.id) return;
+
+    setIsFetchingDetails(true);
+    setErrors({});
+    try {
+      console.log(`Fetching manual details for asset ID: ${assetToEdit.id}`);
+      const details = await callApi(`${MANUAL_ASSET_API}/${assetToEdit.id}`);
+      console.log("Received manual details:", details);
+
+      // Determine initial state based on YNAB data + manual details
+      const initialTypeObj =
+        assetTypes.find((t) => t.id === details?.type_id) ||
+        assetTypes.find((t) => t.name === assetToEdit.type);
+      const initialBankObj =
+        banks.find((b) => b.id === details?.bank_id) ||
+        banks.find((b) => b.name === assetToEdit.bank);
+      const initialTypeIsStock = initialTypeObj?.name === "Stocks";
+
+      setFormData({
+        name: assetToEdit.name || "",
+        type: initialTypeObj?.name || "",
+        type_id: initialTypeObj?.id || details?.type_id || "",
+        bank: initialBankObj?.name || "",
+        bank_id: initialBankObj?.id || details?.bank_id || "",
+        symbol:
+          details?.symbol ||
+          (initialTypeIsStock ? assetToEdit.symbol : "") ||
+          "",
+        shares:
+          details?.shares?.toString() ||
+          (initialTypeIsStock ? assetToEdit.shares : "") ||
+          "",
+        value: isYnabAsset ? "" : assetToEdit.value?.toString() || "0",
+      });
+      setIsStock(initialTypeIsStock);
+    } catch (error) {
+      console.error("Error fetching manual asset details:", error);
+      notify("Failed to load existing details for this asset.", "error");
+      // Initialize with base asset data if fetch fails
       setFormData({
         name: assetToEdit.name || "",
         type: assetToEdit.type || "",
-        value: assetToEdit.value?.toString() || "0", // Convert value to string for TextField
+        type_id: "",
         bank: assetToEdit.bank || "",
+        bank_id: "",
         symbol: assetToEdit.symbol || "",
-        shares: assetToEdit.shares?.toString() || "", // Convert shares to string
-        value_last_updated:
-          assetToEdit.value_last_updated || new Date().toISOString(),
+        shares: assetToEdit.shares?.toString() || "",
+        value: isYnabAsset ? "" : assetToEdit.value?.toString() || "0",
       });
-      // Check if the initial asset type is 'Stock'
-      const initialTypeIsStock = assetToEdit.type === "Stocks";
-      setIsStock(initialTypeIsStock || false);
-      setErrors({});
-      setIsLoading(false);
-    } else if (!open) {
-      // Reset form when closed
-      setFormData(initialFormData);
-      setIsStock(false);
-      setErrors({});
+      setIsStock(assetToEdit.type === "Stocks");
+    } finally {
+      setIsFetchingDetails(false);
     }
-  }, [open, assetToEdit, assetTypes]);
+  }, [open, assetToEdit, assetTypes, banks, notify, isYnabAsset]);
+
+  useEffect(() => {
+    fetchManualDetails();
+  }, [fetchManualDetails]);
 
   const handleInputChange = (event) => {
     const { name, value } = event.target;
     let updatedFormData = { ...formData, [name]: value };
+    let newIsStock = isStock;
 
-    if (name === "type") {
-      // Update isStock state when asset type changes
-      const isStockType = value === "Stocks";
-      setIsStock(isStockType);
-      setErrors({});
+    if (name === "type_id") {
+      const selectedType = assetTypes.find((t) => t.id === value);
+      updatedFormData.type = selectedType ? selectedType.name : "";
+      newIsStock = selectedType?.name === "Stocks";
+      setIsStock(newIsStock);
+      setErrors((prev) => ({ ...prev, type_id: null }));
+    } else if (name === "bank_id") {
+      const selectedBank = banks.find((b) => b.id === value);
+      updatedFormData.bank = selectedBank ? selectedBank.name : "";
+      setErrors((prev) => ({ ...prev, bank_id: null }));
+    }
 
-      // Reset fields if type changes attributes
-      if (!isStockType) {
-        updatedFormData.symbol = "";
-        updatedFormData.shares = "";
-      }
+    if (name === "type_id" && !newIsStock) {
+      updatedFormData.symbol = "";
+      updatedFormData.shares = "";
     }
 
     setFormData(updatedFormData);
 
-    // Clear error for the field being changed
     if (errors[name]) {
       setErrors((prev) => ({ ...prev, [name]: null }));
     }
@@ -99,23 +144,26 @@ function EditAssetModal({
   const validateForm = () => {
     const newErrors = {};
     if (!formData.name.trim()) newErrors.name = "Asset name is required.";
-    if (!formData.type) newErrors.type = "Asset type is required."; // Should always be set
-    if (
-      !formData.value ||
-      isNaN(formData.value) ||
-      parseFloat(formData.value) < 0
-    ) {
-      newErrors.value = "Valid asset value is required.";
+    if (!formData.type_id) newErrors.type_id = "Asset type is required.";
+
+    if (!isYnabAsset) {
+      if (
+        !formData.value ||
+        isNaN(formData.value) ||
+        parseFloat(formData.value) < 0
+      ) {
+        newErrors.value = "Valid current value is required for manual assets.";
+      }
     }
+
     if (isStock) {
       if (!formData.symbol.trim())
         newErrors.symbol = "Stock symbol is required.";
       if (
-        !formData.shares ||
-        isNaN(formData.shares) ||
-        parseFloat(formData.shares) <= 0
+        formData.shares &&
+        (isNaN(formData.shares) || parseFloat(formData.shares) <= 0)
       ) {
-        newErrors.shares = "Valid number of shares is required.";
+        newErrors.shares = "Shares must be a positive number.";
       }
     }
 
@@ -125,7 +173,7 @@ function EditAssetModal({
 
   const handleSubmit = async (event) => {
     event.preventDefault();
-    if (!assetToEdit) return; // Should not happen if modal is open
+    if (!assetToEdit) return;
 
     if (!validateForm()) {
       notify("Please correct the errors in the form.", "warning");
@@ -133,56 +181,39 @@ function EditAssetModal({
     }
 
     setIsLoading(true);
-    setErrors({}); // Clear old errors before submission
+    setErrors({});
 
-    // Construct payload
     const payload = {
       name: formData.name.trim(),
-      type: formData.type,
-      value: parseFloat(formData.value),
-      bank: formData.bank || null,
-      value_last_updated:
-        formData.value_last_updated || new Date().toISOString(),
+      type_id: formData.type_id,
+      bank_id: formData.bank_id || null,
+      symbol: isStock ? formData.symbol.trim() : null,
+      shares: isStock && formData.shares ? parseFloat(formData.shares) : null,
     };
 
-    // Include optional fields only if applicable based on the type
-    if (isStock) {
-      payload.symbol = formData.symbol.trim();
-      payload.shares = parseFloat(formData.shares);
+    if (!isYnabAsset) {
+      payload.value = parseFloat(formData.value);
     }
 
-    try {
-      const response = await fetch(`${ASSETS_API}/${assetToEdit.id}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-      const result = await response.json();
+    console.log("Submitting payload:", payload);
 
-      if (response.ok && result.success) {
-        onUpdateAsset(result.asset); // Pass the updated asset data back
-        notify("Asset updated successfully.", "success");
-        onClose(); // Close modal on success
-      } else if (response.status === 400 && result.errors) {
-        // Handle validation errors from backend
-        setErrors(result.errors);
-        notify("Validation failed. Please check the fields.", "warning");
-      } else {
-        // Handle other errors (e.g., 404, 500)
-        throw new Error(
-          result.error || "Failed to update asset. Please try again."
-        );
-      }
+    try {
+      const response = await callApi(`${MANUAL_ASSET_API}/${assetToEdit.id}`, {
+        method: "POST",
+        body: payload,
+      });
+
+      console.log("Save manual asset details response:", response);
+
+      onUpdateAsset(response.details || payload);
+      notify("Asset details updated successfully.", "success");
+      onClose();
     } catch (error) {
-      console.error("Error updating asset:", error);
-      // Use Snackbar for general errors
-      notify(
-        error.message ||
-          "An unexpected error occurred while updating the asset.",
-        "error"
-      );
+      console.error("Error saving asset details:", error);
+      notify(error.message || "Failed to save asset details.", "error");
+      if (error.details) {
+        setErrors(error.details);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -195,190 +226,160 @@ function EditAssetModal({
       maxWidth="sm"
       fullWidth
     >
-      <DialogTitle>Edit Asset: {assetToEdit?.name}</DialogTitle>
+      <DialogTitle>Edit Asset: {formData.name}</DialogTitle>
       <DialogContent dividers>
-        {/* Removed general Alert, using Snackbar now */}
-        {assetToEdit ? (
-          <Box component="form" onSubmit={handleSubmit} noValidate>
+        {isFetchingDetails ? (
+          <Box sx={{ display: "flex", justifyContent: "center", p: 3 }}>
+            <CircularProgress />
+          </Box>
+        ) : (
+          <Box
+            component="form"
+            onSubmit={handleSubmit}
+            noValidate
+            sx={{ mt: 1 }}
+          >
             <TextField
-              margin="dense"
-              label="Asset Name"
-              type="text"
+              margin="normal"
+              required
               fullWidth
-              variant="outlined"
+              id="name"
+              label="Asset Name"
               name="name"
+              autoComplete="off"
               value={formData.name}
               onChange={handleInputChange}
-              required
               error={!!errors.name}
               helperText={errors.name}
               disabled={isLoading}
             />
 
-            {/* Asset Type with Manage Types Button */}
-            <Box
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: 1,
-                mt: 2,
-                mb: 1,
-              }}
+            <FormControl
+              fullWidth
+              margin="normal"
+              required
+              error={!!errors.type_id}
             >
-              <FormControl fullWidth error={!!errors.type} disabled={isLoading}>
-                <InputLabel id="asset-type-label">Asset Type</InputLabel>
-                <Select
-                  labelId="asset-type-label"
-                  name="type"
-                  value={formData.type}
-                  onChange={handleInputChange}
-                  label="Asset Type"
-                >
-                  {assetTypes.map((type) => (
-                    <MenuItem
-                      key={typeof type === "string" ? type : type.name}
-                      value={typeof type === "string" ? type : type.name}
-                    >
-                      {typeof type === "string" ? type : type.name}
-                    </MenuItem>
-                  ))}
-                </Select>
-                {errors.type && <FormHelperText>{errors.type}</FormHelperText>}
-              </FormControl>
-              {onOpenManageAssetTypes && (
-                <ManageAssetTypesButton
-                  onClick={onOpenManageAssetTypes}
-                  disabled={isLoading}
-                />
-              )}
-            </Box>
-
-            {/* Bank with Manage Banks Button */}
-            <Box
-              sx={{
-                display: "flex",
-                alignItems: "center",
-                gap: 1,
-                mt: 2,
-                mb: 1,
-              }}
-            >
-              <FormControl fullWidth disabled={isLoading}>
-                <InputLabel id="bank-label">
-                  Bank/Brokerage (Optional)
-                </InputLabel>
-                <Select
-                  labelId="bank-label"
-                  name="bank"
-                  value={formData.bank}
-                  onChange={handleInputChange}
-                  label="Bank/Brokerage (Optional)"
-                >
-                  <MenuItem value="">
-                    <em>None</em>
+              <InputLabel id="type-select-label">Asset Type</InputLabel>
+              <Select
+                labelId="type-select-label"
+                id="type"
+                name="type_id"
+                value={formData.type_id}
+                label="Asset Type"
+                onChange={handleInputChange}
+                disabled={isLoading}
+              >
+                <MenuItem value="">
+                  <em>Select Type...</em>
+                </MenuItem>
+                {assetTypes.map((type) => (
+                  <MenuItem key={type.id} value={type.id}>
+                    {type.name}
                   </MenuItem>
-                  {banks.map((bank) => (
-                    <MenuItem
-                      key={typeof bank === "string" ? bank : bank.name}
-                      value={typeof bank === "string" ? bank : bank.name}
-                    >
-                      {typeof bank === "string" ? bank : bank.name}
-                    </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
-              {onOpenManageBanks && (
-                <ManageBanksButton
-                  onClick={onOpenManageBanks}
-                  disabled={isLoading}
-                />
+                ))}
+              </Select>
+              {errors.type_id && (
+                <FormHelperText>{errors.type_id}</FormHelperText>
               )}
-            </Box>
+            </FormControl>
 
-            {/* Stock-specific fields */}
+            <FormControl fullWidth margin="normal" error={!!errors.bank_id}>
+              <InputLabel id="bank-select-label">
+                Bank/Brokerage (Optional)
+              </InputLabel>
+              <Select
+                labelId="bank-select-label"
+                id="bank"
+                name="bank_id"
+                value={formData.bank_id}
+                label="Bank/Brokerage (Optional)"
+                onChange={handleInputChange}
+                disabled={isLoading}
+              >
+                <MenuItem value="">
+                  <em>None</em>
+                </MenuItem>
+                {banks.map((bank) => (
+                  <MenuItem key={bank.id} value={bank.id}>
+                    {bank.name}
+                  </MenuItem>
+                ))}
+              </Select>
+              {errors.bank_id && (
+                <FormHelperText>{errors.bank_id}</FormHelperText>
+              )}
+            </FormControl>
+
             {isStock && (
-              <Box sx={{ display: "flex", gap: 2, mt: 2 }}>
+              <>
                 <TextField
-                  margin="dense"
+                  margin="normal"
+                  required
+                  fullWidth
+                  id="symbol"
                   label="Stock Symbol"
-                  type="text"
                   name="symbol"
+                  autoComplete="off"
                   value={formData.symbol}
                   onChange={handleInputChange}
-                  required
                   error={!!errors.symbol}
                   helperText={errors.symbol}
                   disabled={isLoading}
-                  sx={{ flexGrow: 1 }}
                 />
                 <TextField
-                  margin="dense"
+                  margin="normal"
+                  fullWidth
+                  id="shares"
                   label="Number of Shares"
-                  type="number"
                   name="shares"
+                  type="number"
+                  inputProps={{ step: "any" }}
+                  autoComplete="off"
                   value={formData.shares}
                   onChange={handleInputChange}
-                  required
                   error={!!errors.shares}
                   helperText={errors.shares}
                   disabled={isLoading}
-                  sx={{ flexGrow: 1 }}
-                  InputProps={{
-                    inputProps: { min: 0.000001, step: "any" },
-                  }}
                 />
-              </Box>
+              </>
             )}
 
-            <TextField
-              margin="dense"
-              label="Current Value"
-              type="number"
-              fullWidth
-              variant="outlined"
-              name="value"
-              value={formData.value}
-              onChange={handleInputChange}
-              required
-              error={!!errors.value}
-              helperText={errors.value}
-              disabled={isLoading}
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">$</InputAdornment>
-                ),
-                inputProps: { min: 0, step: "any" },
-              }}
-              sx={{ mt: 2 }}
-            />
-          </Box>
-        ) : (
-          <Box
-            sx={{
-              display: "flex",
-              justifyContent: "center",
-              alignItems: "center",
-              height: 100,
-            }}
-          >
-            <CircularProgress />
+            {!isYnabAsset && (
+              <TextField
+                margin="normal"
+                required
+                fullWidth
+                id="value"
+                label="Current Value"
+                name="value"
+                type="number"
+                inputProps={{ step: "0.01" }}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">$</InputAdornment>
+                  ),
+                }}
+                value={formData.value}
+                onChange={handleInputChange}
+                error={!!errors.value}
+                helperText={errors.value}
+                disabled={isLoading}
+              />
+            )}
           </Box>
         )}
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose} disabled={isLoading}>
+        <Button onClick={onClose} disabled={isLoading || isFetchingDetails}>
           Cancel
         </Button>
         <Button
           onClick={handleSubmit}
           variant="contained"
-          disabled={isLoading || !assetToEdit}
+          disabled={isLoading || isFetchingDetails}
         >
-          {isLoading ? (
-            <CircularProgress size={24} color="inherit" />
-          ) : (
-            "Save Changes"
-          )}
+          {isLoading ? <CircularProgress size={24} /> : "Save Changes"}
         </Button>
       </DialogActions>
     </Dialog>
@@ -390,10 +391,12 @@ EditAssetModal.propTypes = {
   onClose: PropTypes.func.isRequired,
   onUpdateAsset: PropTypes.func.isRequired,
   assetToEdit: PropTypes.object,
-  assetTypes: PropTypes.array.isRequired,
-  banks: PropTypes.array.isRequired,
-  onOpenManageAssetTypes: PropTypes.func,
-  onOpenManageBanks: PropTypes.func,
+  assetTypes: PropTypes.arrayOf(
+    PropTypes.shape({ id: PropTypes.string, name: PropTypes.string })
+  ).isRequired,
+  banks: PropTypes.arrayOf(
+    PropTypes.shape({ id: PropTypes.string, name: PropTypes.string })
+  ).isRequired,
 };
 
 export default EditAssetModal;

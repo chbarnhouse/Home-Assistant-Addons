@@ -154,15 +154,15 @@ function AssetsPage() {
   };
 
   const handleOpenEditModal = (asset) => {
-    // Prevent editing YNAB-linked assets via the manual asset modal
-    if (asset.is_ynab) {
-      notify(
-        "Editing YNAB-linked assets requires specific handling (e.g., for stock reconciliation) and is not done through this form.",
-        "info"
-      );
-      return; // Do not open the modal
-    }
-    // Only proceed for manual assets
+    // Allow opening modal for all assets (YNAB or manual)
+    // The modal itself will handle fetching/saving manual details
+    // if (asset.is_ynab) {
+    //   notify(
+    //     "Editing YNAB-linked assets requires specific handling (e.g., for stock reconciliation) and is not done through this form.",
+    //     "info"
+    //   );
+    //   return; // Do not open the modal
+    // }
     setAssetToEdit(asset);
     setOpenEditModal(true);
   };
