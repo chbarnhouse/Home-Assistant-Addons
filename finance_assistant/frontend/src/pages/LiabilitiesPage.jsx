@@ -27,14 +27,20 @@ const LIABILITIES_API = "liabilities";
 
 // Helper to format currency
 const formatCurrency = (value) => {
-  if (value == null || value === undefined || isNaN(value)) return "N/A";
+  console.log(`[formatCurrency] Input value: ${value}, Type: ${typeof value}`); // Log input
+  if (value == null || value === undefined || isNaN(value)) {
+    console.log("[formatCurrency] Returning N/A due to invalid input");
+    return "N/A";
+  }
   // Assume value is already in dollars, just format and take absolute
-  return new Intl.NumberFormat("en-US", {
+  const formatted = new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(Math.abs(value));
+  console.log(`[formatCurrency] Returning formatted value: ${formatted}`); // Log output
+  return formatted;
 };
 
 // Helper to format dates
@@ -287,7 +293,14 @@ function LiabilitiesPage() {
       minWidth: 150,
       flex: 1,
       // Explicitly render the value from the 'type' field
-      renderCell: (params) => params.value,
+      renderCell: (params) => {
+        // Log the value being rendered for the Type column
+        console.log(
+          `[Type Render] ID: ${params.id}, Value being rendered:`,
+          params.value
+        );
+        return params.value;
+      },
     },
     {
       field: "bank",
