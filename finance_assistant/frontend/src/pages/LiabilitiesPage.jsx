@@ -28,7 +28,7 @@ const LIABILITIES_API = "liabilities";
 // Helper to format currency
 const formatCurrency = (value) => {
   if (value == null || value === undefined || isNaN(value)) return "N/A";
-  // Liabilities are often negative, show absolute value
+  // Assume value is already in dollars, just format and take absolute
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
@@ -103,25 +103,25 @@ function LiabilitiesPage() {
       const processedLiabilities = liabilitiesArray.map((liability, index) => {
         const liabObj = liability || {};
         const isYnab = !!liabObj.is_ynab;
-        let currentBalance = null;
+        let currentBalanceInDollars = null; // Calculate final dollar value here
 
         // Explicitly handle YNAB balance first (milliunits)
         if (isYnab && typeof liabObj.balance === "number") {
-          currentBalance = liabObj.balance / 1000.0; // Divide milliunits
+          currentBalanceInDollars = liabObj.balance / 1000.0; // Divide milliunits to get dollars
           console.log(
-            `[YNAB Liability ${index}] Balance (milliunits): ${liabObj.balance}, Calculated: ${currentBalance}`
+            `[YNAB Liability ${index}] Balance (milliunits): ${liabObj.balance}, Calculated (Dollars): ${currentBalanceInDollars}`
           );
         } else if (!isYnab) {
           // Handle manual liability balance fields (assume already dollars)
           if (typeof liabObj.balance === "number") {
-            currentBalance = liabObj.balance;
+            currentBalanceInDollars = liabObj.balance;
           } else if (typeof liabObj.value === "number") {
-            currentBalance = liabObj.value;
+            currentBalanceInDollars = liabObj.value;
           } else if (typeof liabObj.current_value === "number") {
-            currentBalance = liabObj.current_value;
+            currentBalanceInDollars = liabObj.current_value;
           }
           console.log(
-            `[Manual Liability ${index}] Calculated Balance: ${currentBalance}`
+            `[Manual Liability ${index}] Calculated Balance (Dollars): ${currentBalanceInDollars}`
           );
         } else {
           console.warn(
@@ -169,7 +169,7 @@ function LiabilitiesPage() {
           type_id: liabObj.type_id, // Keep the ID
           bank: bankName,
           bank_id: liabObj.bank_id, // Keep the ID
-          balance: currentBalance, // Keep it signed for potential calculations, format in renderCell
+          balance: currentBalanceInDollars, // Store the final dollar amount
           interest_rate: liabObj.interest_rate, // Assuming it's a decimal
           start_date: liabObj.start_date,
           is_ynab: isYnab,
@@ -286,7 +286,8 @@ function LiabilitiesPage() {
       headerName: "Type",
       minWidth: 150,
       flex: 1,
-      // Potentially add renderCell with Autocomplete later if needed
+      // Explicitly render the value from the 'type' field
+      renderCell: (params) => params.value,
     },
     {
       field: "bank",
