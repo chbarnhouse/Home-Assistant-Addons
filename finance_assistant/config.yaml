@@ -1,6 +1,6 @@
 name: Finance Assistant
 description: "Manage finances, sync with YNAB, and integrate with Home Assistant."
-version: 0.3.559
+version: 0.3.560
 slug: "finance_assistant"
 # upstream: "https://github.com/your-github-username/example-addon-repository"
 init: false

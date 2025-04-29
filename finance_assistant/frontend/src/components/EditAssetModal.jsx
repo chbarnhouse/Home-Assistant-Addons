@@ -19,8 +19,9 @@ import ManageAssetTypesButton from "./ManageAssetTypesButton";
 import FormHelperText from "@mui/material/FormHelperText";
 import { callApi } from "../utils/api"; // Import callApi
 
-const ASSETS_API = "/api/assets"; // Base API endpoint for *manual* assets
-const MANUAL_ASSET_API = "/api/manual_asset"; // API for manual details (incl. YNAB linked)
+// Define API endpoints *without* the leading /api
+const ASSETS_API = "assets"; // Base API endpoint for *manual* assets
+const MANUAL_ASSET_API = "manual_asset"; // API for manual details (incl. YNAB linked)
 
 function EditAssetModal({
   open,
@@ -59,6 +60,7 @@ function EditAssetModal({
     setErrors({});
     try {
       console.log(`Fetching manual details for asset ID: ${assetToEdit.id}`);
+      // Pass relative path to callApi
       const details = await callApi(`${MANUAL_ASSET_API}/${assetToEdit.id}`);
       console.log("Received manual details:", details);
 
@@ -198,8 +200,10 @@ function EditAssetModal({
     console.log("Submitting payload:", payload);
 
     try {
+      // Always use the MANUAL_ASSET_API endpoint to save details
+      // Pass relative path to callApi
       const response = await callApi(`${MANUAL_ASSET_API}/${assetToEdit.id}`, {
-        method: "POST",
+        method: "POST", // Use POST or PUT based on backend expectation
         body: payload,
       });
 
