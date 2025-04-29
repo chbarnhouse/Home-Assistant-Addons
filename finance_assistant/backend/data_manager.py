@@ -43,6 +43,14 @@ CREDIT_CARDS_FILE = MANUAL_CREDIT_CARDS_FILE  # Alias for backward compatibility
 # Ensure the data directory exists
 os.makedirs(DATA_DIRECTORY, exist_ok=True)
 
+DEFAULT_ASSET_TYPES = [{"id": str(uuid.uuid4()), "name": "Stocks"}, {"id": str(uuid.uuid4()), "name": "Retirement Plan"}]
+DEFAULT_LIABILITY_TYPES = [
+    {"id": str(uuid.uuid4()), "name": "Student Loan"},
+    {"id": str(uuid.uuid4()), "name": "Auto Loan"},
+    {"id": str(uuid.uuid4()), "name": "Personal Loan"},
+    {"id": str(uuid.uuid4()), "name": "Mortgage"}
+]
+
 class DataManager:
     def __init__(self, ynab_client=None): # Accept ynab_client
         self.ynab_client = ynab_client # Store the client
@@ -63,8 +71,8 @@ class DataManager:
         self._initialize_file(ACCOUNT_TYPES_FILE, [{"id": "Checking", "name": "Checking"}, {"id": "Savings", "name": "Savings"}, {"id": "Cash", "name": "Cash"}])
 
         # --- Initialize type files with defaults ---
-        self._ensure_default_types(ASSET_TYPES_FILE, ["Stocks", "Retirement Plan"])
-        self._ensure_default_types(LIABILITY_TYPES_FILE, ["Student Loan", "Auto Loan", "Personal Loan", "Mortgage"]) # Also ensure original defaults are there
+        self._ensure_default_types_structured(ASSET_TYPES_FILE, DEFAULT_ASSET_TYPES)
+        self._ensure_default_types_structured(LIABILITY_TYPES_FILE, DEFAULT_LIABILITY_TYPES)
         # --- End type file initialization ---
 
         # Initialize asset files
@@ -93,7 +101,8 @@ class DataManager:
             _LOGGER.info(f"Initialized data file: {file_path}")
 
     def _ensure_default_types(self, file_path, default_types):
-        """Ensures a type file exists and contains the specified default types."""
+        """DEPRECATED: Ensures a type file exists and contains the specified default types (as strings)."""
+        _LOGGER.warning("_ensure_default_types is deprecated. Use _ensure_default_types_structured.")
         data = []
         file_exists = os.path.exists(file_path)
         if file_exists:
@@ -140,6 +149,40 @@ class DataManager:
             _LOGGER.info(f"Successfully wrote default types to {file_path}")
         else:
              _LOGGER.debug(f"File {file_path} exists and contains all default types.")
+
+    def _ensure_default_types_structured(self, file_path, default_type_objects):
+        """Ensures a type file exists and contains the specified default types as {id, name} objects."""
+        data = []
+        file_exists = os.path.exists(file_path)
+        if file_exists:
+            try:
+                data = self._read_json(file_path)
+                if not isinstance(data, list) or not all(isinstance(item, dict) and 'id' in item and 'name' in item for item in data):
+                    _LOGGER.warning(f"File {file_path} format incorrect. Re-initializing with defaults.")
+                    data = []
+                    file_exists = False
+            except Exception as e:
+                _LOGGER.error(f"Error reading or validating {file_path}: {e}. Re-initializing.")
+                data = []
+                file_exists = False
+
+        current_names = {item['name'] for item in data}
+        needs_update = False
+        types_to_add = []
+        for default_obj in default_type_objects:
+            if default_obj['name'] not in current_names:
+                types_to_add.append(default_obj)
+                needs_update = True
+
+        if not file_exists or needs_update:
+            _LOGGER.info(f"Initializing or updating {file_path} with default type objects.")
+            updated_data = data + types_to_add
+            # Sort by name for consistency
+            updated_data.sort(key=lambda x: x['name'])
+            self._write_json(file_path, updated_data)
+            _LOGGER.info(f"Successfully wrote default type objects to {file_path}")
+        else:
+            _LOGGER.debug(f"File {file_path} exists and contains all default types.")
 
     def _read_json(self, file_path):
         try:
@@ -790,103 +833,154 @@ class DataManager:
 
     # --- Asset Types ---
     def get_asset_types(self):
-        return self._read_json(ASSET_TYPES_FILE)
+        types = self._read_json(ASSET_TYPES_FILE)
+        if not isinstance(types, list) or not all(isinstance(t, dict) and 'id' in t and 'name' in t for t in types):
+            _LOGGER.error(f"Invalid data format in {ASSET_TYPES_FILE}. Expected list of dicts.")
+            # Attempt to repair or return default
+            self._ensure_default_types_structured(ASSET_TYPES_FILE, DEFAULT_ASSET_TYPES)
+            return self._read_json(ASSET_TYPES_FILE) # Re-read after potential repair
+        return types
 
     def add_asset_type(self, type_name):
+        """Adds a new asset type to asset_types.json."""
         types = self.get_asset_types()
-        # Normalize the type name
-        normalized_name = type_name.strip()
-        # Removed capitalization
+        type_name = self._title_case(type_name.strip())
+        if any(t['name'].lower() == type_name.lower() for t in types):
+            _LOGGER.warning(f"Asset type '{type_name}' already exists.")
+            existing_type = next((t for t in types if t['name'].lower() == type_name.lower()), None)
+            return existing_type # Return the existing type object
+        new_type = {"id": str(uuid.uuid4()), "name": type_name}
+        types.append(new_type)
+        types.sort(key=lambda x: x['name']) # Keep sorted
+        if self._write_json(ASSET_TYPES_FILE, types):
+             _LOGGER.info(f"Added new asset type: {new_type}")
+             return new_type
+        else:
+             _LOGGER.error(f"Failed to add asset type '{type_name}'")
+             return None
 
-        # Case-insensitive check if type already exists
-        if not any(t.lower() == normalized_name.lower() for t in types):
-            types.append(normalized_name) # Use normalized_name
-            self._write_json(ASSET_TYPES_FILE, types)
-            return True, "Asset type added successfully", normalized_name
-        return False, f"Asset type '{type_name}' already exists", None
-
-    def delete_asset_type(self, type_name):
+    def update_asset_type(self, type_id, new_name):
+        """Updates the name of an existing asset type."""
         types = self.get_asset_types()
-        # Case-insensitive find
-        to_delete_idx = next((i for i, t in enumerate(types) if t.lower() == type_name.lower()), None)
-        if to_delete_idx is not None:
-            deleted_type = types.pop(to_delete_idx)
-            self._write_json(ASSET_TYPES_FILE, types)
-            return True, f"Asset type '{deleted_type}' deleted successfully"
-        return False, f"Asset type '{type_name}' not found"
+        new_name = self._title_case(new_name.strip())
+        target_index = -1
+        for i, t in enumerate(types):
+            if t['id'] == type_id:
+                target_index = i
+                break
 
-    def update_asset_type(self, original_name, new_name):
+        if target_index == -1:
+            _LOGGER.error(f"Asset type with ID '{type_id}' not found for update.")
+            return False
+
+        # Check if new name already exists (case-insensitive) excluding the current item
+        if any(t['name'].lower() == new_name.lower() and t['id'] != type_id for t in types):
+             _LOGGER.warning(f"Asset type name '{new_name}' already exists.")
+             return False # Or handle as needed, maybe return the conflicting item's ID?
+
+        _LOGGER.info(f"Updating asset type ID {type_id} name from '{types[target_index]['name']}' to '{new_name}'")
+        types[target_index]['name'] = new_name
+        types.sort(key=lambda x: x['name']) # Keep sorted
+        if self._write_json(ASSET_TYPES_FILE, types):
+            _LOGGER.info(f"Successfully updated asset type ID {type_id}")
+            return True
+        else:
+            _LOGGER.error(f"Failed to update asset type ID {type_id}")
+            return False
+
+    def delete_asset_type(self, type_id):
+        """Deletes an asset type from asset_types.json."""
         types = self.get_asset_types()
-        # Normalize the new name
-        normalized_new_name = new_name.strip()
-        # Removed capitalization
+        original_length = len(types)
+        types_to_keep = [t for t in types if t['id'] != type_id]
 
-        # Case-insensitive check for original name
-        original_idx = next((i for i, t in enumerate(types) if t.lower() == original_name.lower()), None)
-        # Case-insensitive check if new name already exists
-        new_name_exists = any(t.lower() == normalized_new_name.lower() and t.lower() != original_name.lower() for t in types)
+        if len(types_to_keep) == original_length:
+            _LOGGER.warning(f"Asset type with ID '{type_id}' not found for deletion.")
+            return False
 
-        if original_idx is not None and not new_name_exists:
-            types[original_idx] = normalized_new_name # Use normalized_new_name
-            self._write_json(ASSET_TYPES_FILE, types)
-            return True, "Asset type updated successfully", normalized_new_name
-        elif new_name_exists:
-            _LOGGER.warning(f"Cannot update asset type: new name '{new_name}' already exists.")
-            return False, f"Asset type '{new_name}' already exists", None
-        elif original_idx is None:
-            _LOGGER.warning(f"Cannot update asset type: original name '{original_name}' not found.")
-            return False, f"Asset type '{original_name}' not found", None
-        return False, "Unknown error updating asset type", None
+        # Note: No need to re-sort after deletion
+        if self._write_json(ASSET_TYPES_FILE, types_to_keep):
+            _LOGGER.info(f"Deleted asset type with ID: {type_id}")
+            # TODO: Add logic to update assets that used this type? Set to null or default?
+            return True
+        else:
+            _LOGGER.error(f"Failed to delete asset type with ID '{type_id}'")
+            return False
 
     # --- Liability Types ---
     def get_liability_types(self):
-        return self._read_json(LIABILITY_TYPES_FILE)
+        types = self._read_json(LIABILITY_TYPES_FILE)
+        if not isinstance(types, list) or not all(isinstance(t, dict) and 'id' in t and 'name' in t for t in types):
+            _LOGGER.error(f"Invalid data format in {LIABILITY_TYPES_FILE}. Expected list of dicts.")
+            # Attempt to repair or return default
+            self._ensure_default_types_structured(LIABILITY_TYPES_FILE, DEFAULT_LIABILITY_TYPES)
+            return self._read_json(LIABILITY_TYPES_FILE) # Re-read after potential repair
+        return types
 
     def add_liability_type(self, type_name):
+        """Adds a new liability type to liability_types.json."""
         types = self.get_liability_types()
-        # Normalize the type name
-        normalized_name = type_name.strip()
-        # Removed capitalization
+        type_name = self._title_case(type_name.strip())
+        if any(t['name'].lower() == type_name.lower() for t in types):
+            _LOGGER.warning(f"Liability type '{type_name}' already exists.")
+            existing_type = next((t for t in types if t['name'].lower() == type_name.lower()), None)
+            return existing_type # Return the existing type object
+        new_type = {"id": str(uuid.uuid4()), "name": type_name}
+        types.append(new_type)
+        types.sort(key=lambda x: x['name']) # Keep sorted
+        if self._write_json(LIABILITY_TYPES_FILE, types):
+            _LOGGER.info(f"Added new liability type: {new_type}")
+            return new_type
+        else:
+            _LOGGER.error(f"Failed to add liability type '{type_name}'")
+            return None
 
-        # Case-insensitive check if type already exists
-        if not any(t.lower() == normalized_name.lower() for t in types):
-            types.append(normalized_name) # Use normalized_name
-            self._write_json(LIABILITY_TYPES_FILE, types)
-            return True, "Liability type added successfully", normalized_name
-        return False, f"Liability type '{type_name}' already exists", None
-
-    def update_liability_type(self, original_name, new_name):
+    def update_liability_type(self, type_id, new_name):
+        """Updates the name of an existing liability type."""
         types = self.get_liability_types()
-        # Normalize the new name
-        normalized_new_name = new_name.strip()
-        # Removed capitalization
+        new_name = self._title_case(new_name.strip())
+        target_index = -1
+        for i, t in enumerate(types):
+            if t['id'] == type_id:
+                target_index = i
+                break
 
-        # Case-insensitive check for original name
-        original_idx = next((i for i, t in enumerate(types) if t.lower() == original_name.lower()), None)
-        # Case-insensitive check if new name already exists
-        new_name_exists = any(t.lower() == normalized_new_name.lower() and t.lower() != original_name.lower() for t in types)
+        if target_index == -1:
+            _LOGGER.error(f"Liability type with ID '{type_id}' not found for update.")
+            return False
 
-        if original_idx is not None and not new_name_exists:
-            types[original_idx] = normalized_new_name # Use normalized_new_name
-            self._write_json(LIABILITY_TYPES_FILE, types)
-            return True, "Liability type updated successfully", normalized_new_name
-        elif new_name_exists:
-            _LOGGER.warning(f"Cannot update liability type: new name '{new_name}' already exists.")
-            return False, f"Liability type '{new_name}' already exists", None
-        elif original_idx is None:
-            _LOGGER.warning(f"Cannot update liability type: original name '{original_name}' not found.")
-            return False, f"Liability type '{original_name}' not found", None
-        return False, "Unknown error updating liability type", None
+        # Check if new name already exists (case-insensitive) excluding the current item
+        if any(t['name'].lower() == new_name.lower() and t['id'] != type_id for t in types):
+             _LOGGER.warning(f"Liability type name '{new_name}' already exists.")
+             return False
 
-    def delete_liability_type(self, type_name):
+        _LOGGER.info(f"Updating liability type ID {type_id} name from '{types[target_index]['name']}' to '{new_name}'")
+        types[target_index]['name'] = new_name
+        types.sort(key=lambda x: x['name']) # Keep sorted
+        if self._write_json(LIABILITY_TYPES_FILE, types):
+            _LOGGER.info(f"Successfully updated liability type ID {type_id}")
+            return True
+        else:
+            _LOGGER.error(f"Failed to update liability type ID {type_id}")
+            return False
+
+    def delete_liability_type(self, type_id):
+        """Deletes a liability type from liability_types.json."""
         types = self.get_liability_types()
-        # Case-insensitive find
-        to_delete_idx = next((i for i, t in enumerate(types) if t.lower() == type_name.lower()), None)
-        if to_delete_idx is not None:
-            deleted_type = types.pop(to_delete_idx)
-            self._write_json(LIABILITY_TYPES_FILE, types)
-            return True, f"Liability type '{deleted_type}' deleted successfully"
-        return False, f"Liability type '{type_name}' not found"
+        original_length = len(types)
+        types_to_keep = [t for t in types if t['id'] != type_id]
+
+        if len(types_to_keep) == original_length:
+            _LOGGER.warning(f"Liability type with ID '{type_id}' not found for deletion.")
+            return False
+
+        if self._write_json(LIABILITY_TYPES_FILE, types_to_keep):
+            _LOGGER.info(f"Deleted liability type with ID: {type_id}")
+            # TODO: Add logic to update liabilities that used this type?
+            return True
+        else:
+            _LOGGER.error(f"Failed to delete liability type with ID '{type_id}'")
+            return False
 
     # --- Manual Liability Data ---
     def get_manual_liabilities(self):

@@ -68,6 +68,17 @@ else:
 data_manager = DataManager(ynab_client=ynab_client)
 _LOGGER.info("DataManager initialized globally.")
 
+# Fetch default types once at startup for mapping
+try:
+    DEFAULT_ASSET_TYPE_MAP = {t['name']: t['id'] for t in data_manager.get_asset_types()}
+    DEFAULT_LIABILITY_TYPE_MAP = {t['name']: t['id'] for t in data_manager.get_liability_types()}
+    _LOGGER.info(f"Loaded default asset type map: {DEFAULT_ASSET_TYPE_MAP}")
+    _LOGGER.info(f"Loaded default liability type map: {DEFAULT_LIABILITY_TYPE_MAP}")
+except Exception as e:
+    _LOGGER.error(f"Failed to load default types for mapping: {e}")
+    DEFAULT_ASSET_TYPE_MAP = {}
+    DEFAULT_LIABILITY_TYPE_MAP = {}
+
 # --- Authentication decorator for API routes ---
 def supervisor_token_required(f):
     @wraps(f)
@@ -248,231 +259,227 @@ def get_all_data():
         if ynab_accounts_raw is None: ynab_accounts_raw = []
         _LOGGER.debug(f"Successfully fetched {len(ynab_accounts_raw)} raw accounts from YNAB.")
     except ynab_api.exceptions.ApiValueError as val_err:
-        _LOGGER.error(f"YNAB API ValueError fetching accounts: {val_err}")
+        _LOGGER.error(f"YNAB API Value Error (likely invalid key/budget ID): {val_err}")
+        return jsonify({"error": "YNAB API Configuration Error.", "details": str(val_err)}), 500
+    except ynab_api.exceptions.ApiException as api_err:
+        _LOGGER.error(f"YNAB API Exception: {api_err}")
+        return jsonify({"error": "YNAB API communication error.", "details": str(api_err)}), 500
     except Exception as e:
-        _LOGGER.error(f"Unexpected error fetching YNAB accounts: {e}", exc_info=True)
-        return jsonify({"error": f"Unexpected error fetching YNAB accounts: {e}"}), 500
+        _LOGGER.exception("Unexpected error fetching accounts from YNAB")
+        return jsonify({"error": "Unexpected error fetching YNAB accounts."}), 500
 
-    combined_accounts = []
-    all_assets_combined = []
-    combined_liabilities = []
-    combined_credit_cards = []
-    transactions = []
-    scheduled_transactions = []
-    categories = []
+    # Fetch all manual data types
+    manual_accounts = data_manager.get_manual_accounts()
+    manual_assets = data_manager.get_manual_assets()
+    manual_liabilities = data_manager.get_manual_liabilities()
+    manual_only_liabilities = data_manager.get_manual_only_liabilities()
+    manual_cards = data_manager.get_manual_credit_cards()
 
-    try:
-        manual_accounts_data = data_manager.get_manual_accounts()
-        manual_assets_dict = data_manager.get_manual_assets()
-        manual_liabilities_data = data_manager.get_manual_liabilities()
-        manual_only_liabilities_dict = data_manager.get_manual_only_liabilities()
-        manual_credit_cards_data = data_manager.get_manual_credit_cards()
+    # Fetch types for mapping (use the global maps loaded at startup for efficiency)
+    asset_type_map = DEFAULT_ASSET_TYPE_MAP
+    liability_type_map = DEFAULT_LIABILITY_TYPE_MAP
+    _LOGGER.debug(f"Using startup asset type map: {asset_type_map}")
+    _LOGGER.debug(f"Using startup liability type map: {liability_type_map}")
 
-        # --- Process Accounts, Assets, Liabilities, Credit Cards ---
-        regular_account_types = {'Checking', 'Savings', 'Cash'}
-        potential_ynab_asset_types = {'tracking', 'investmentAccount', 'otherAsset'}
-        potential_liability_types = {'otherLiability', 'mortgage', 'autoLoan', 'studentLoan', 'personalLoan', 'lineOfCredit'}
-        potential_credit_card_types = {'creditCard'}
-        processed_manual_asset_ids = set()
-        processed_liability_ids = set()
 
-        for acc in ynab_accounts_raw:
-            if acc.deleted: continue
-            acc_dict = acc.to_dict()
-            ynab_id = acc_dict.get('id')
-            if not ynab_id: continue
-            acc_type = acc_dict.get('type')
+    # Define YNAB type to our default type name mappings
+    # Ensure these names EXACTLY match the 'name' field in the default type objects
+    YNAB_TO_ASSET_TYPE_NAME = {
+        'investmentAccount': 'Stocks', # Assuming 'Stocks' is a default type name
+        'otherAsset': 'Other Asset' # Add a generic default if needed
+        # Add other YNAB asset types here (e.g., 'brokerageAccount')
+    }
+    YNAB_TO_LIABILITY_TYPE_NAME = {
+        'mortgage': 'Mortgage',
+        'studentLoan': 'Student Loan',
+        'autoLoan': 'Auto Loan',
+        'personalLoan': 'Personal Loan',
+        'creditCard': 'Credit Card', # Even if handled separately later, map for potential use
+        'otherLiability': 'Other Liability' # Add a generic default if needed
+        # Add other YNAB liability types here (e.g., 'medicalDebt')
+    }
 
-            # Process Regular Accounts (case-insensitive)
-            if acc_type and acc_type.lower() in {'checking', 'savings', 'cash'}:
-                # Pass the YNAB account type to get_manual_account_details
-                manual_details = data_manager.get_manual_account_details(ynab_id, account_type=acc_type)
-                allocation_rules = manual_details.get('allocation_rules', []) # Rules now have correct default status
-                allocations = calculate_allocations(acc_dict.get('balance', 0), allocation_rules)
+    # --- Process YNAB Accounts (including assets/liabilities) ---
+    processed_accounts = []
+    processed_assets = []
+    processed_liabilities = []
+    processed_cards_from_ynab = {} # Store card details from YNAB here
 
-                # Determine final account type (prioritize manual, fallback to Title Case YNAB type)
-                final_account_type = manual_details.get('account_type', acc_type.title() if acc_type else "Unknown")
+    for ynab_account in ynab_accounts_raw:
+        if not ynab_account.deleted and not ynab_account.closed:
+            # --- Base YNAB Data ---
+            ynab_data = ynab_account.to_dict()
+            # Ensure balance is treated as an integer (milliunits)
+            ynab_data['balance'] = int(ynab_account.balance) if ynab_account.balance is not None else 0
+            ynab_data['cleared_balance'] = int(ynab_account.cleared_balance) if ynab_account.cleared_balance is not None else 0
+            ynab_data['uncleared_balance'] = int(ynab_account.uncleared_balance) if ynab_account.uncleared_balance is not None else 0
 
-                # Build combined account object
-                combined = {
-                    **acc_dict,
-                    'bank': manual_details.get('bank'),
-                    'last_4_digits': manual_details.get('last_4_digits'),
-                    'include_bank_in_name': manual_details.get('include_bank_in_name', True),
-                    'notes': manual_details.get('note', acc_dict.get('note')),
-                    'account_type': final_account_type, # Use determined type
-                    'type': final_account_type, # Keep type consistent
-                    'allocation_rules': allocation_rules,
-                    **allocations # Include calculated liquid/frozen/deep_freeze
-                }
-                combined_accounts.append(combined)
 
-            # Process Assets
-            elif acc_type in potential_ynab_asset_types:
-                manual_details = manual_assets_dict.get(ynab_id, {})
+            # --- Augment with Manual Data ---
+            ynab_account_id = ynab_account.id
+            manual_details = {}
+            account_type = ynab_account.type
 
-                # --- Default Asset Type Mapping ---
-                assigned_asset_type = manual_details.get('type') # Prioritize manually set type
-                if not assigned_asset_type:
-                    account_name_lower = acc_dict.get('name', '').lower()
-                    if acc_type == 'investmentAccount':
-                        if any(keyword in account_name_lower for keyword in ['401k', 'ira', 'retirement', 'roth']):
-                            assigned_asset_type = "Retirement Plan"
+            if account_type in ['checking', 'savings', 'cash', 'lineOfCredit', 'otherCredit', 'payPal', 'merchantAccount']:
+                manual_details = manual_accounts.get(ynab_account_id, {})
+                final_data = {**ynab_data, **manual_details} # Merge manual data
+                final_data.setdefault('id', ynab_account_id)
+                final_data.setdefault('name', ynab_account.name)
+                final_data['is_ynab'] = True
+                final_data['ynab_type'] = account_type
+
+                # Apply allocation rules if they exist
+                allocation_rules = manual_details.get('allocation_rules', [])
+                allocations = calculate_allocations(ynab_account.balance, allocation_rules)
+                final_data['liquid_balance_milliunits'] = allocations['liquid_milliunits']
+                final_data['frozen_balance_milliunits'] = allocations['frozen_milliunits']
+                final_data['deep_freeze_balance_milliunits'] = allocations['deep_freeze_milliunits']
+                processed_accounts.append(final_data)
+
+            elif account_type in ['investmentAccount', 'otherAsset']:
+                manual_details = manual_assets.get(ynab_account_id, {})
+                final_data = {**ynab_data, **manual_details}
+                final_data.setdefault('id', ynab_account_id)
+                final_data.setdefault('name', ynab_account.name)
+                final_data['is_ynab'] = True
+                final_data['ynab_type'] = account_type
+
+                # --- Assign default type if not manually set ---
+                # Check if 'type' (old string format) or 'type_id' (new dict format) is missing
+                if not final_data.get('type') and not final_data.get('type_id'):
+                    default_type_name = YNAB_TO_ASSET_TYPE_NAME.get(account_type)
+                    if default_type_name:
+                        default_type_id = asset_type_map.get(default_type_name)
+                        if default_type_id:
+                            final_data['type_id'] = default_type_id # Set the type_id
+                            _LOGGER.debug(f"Assigned default asset type '{default_type_name}' (ID: {default_type_id}) to YNAB asset '{final_data['name']}'")
                         else:
-                            assigned_asset_type = "Stocks"
-                    else: # otherAsset, tracking
-                        # Less certain, maybe use name keywords or default to Other?
-                        assigned_asset_type = acc_type # Fallback to raw YNAB type for now
-                # --- End Mapping ---
+                            _LOGGER.warning(f"Default asset type name '{default_type_name}' found in map but corresponding ID not found in current types map: {asset_type_map}")
+                    else:
+                        _LOGGER.debug(f"No default asset type mapping for YNAB type '{account_type}'")
+                # --- End Assign default type ---
 
-                combined = {
-                    'id': ynab_id, 'name': acc_dict.get('name'),
-                    'type': assigned_asset_type, # Use mapped type
-                    'bank': manual_details.get('bank'),
-                    'value': acc_dict.get('balance', 0) / 1000.0,
-                    'value_last_updated': acc_dict.get('last_modified_on'),
-                    'entity_id': manual_details.get('entity_id'), 'shares': manual_details.get('shares'),
-                    'is_ynab': True, 'deleted': False, 'on_budget': acc_dict.get('on_budget'),
-                    'ynab_type': acc_type
-                }
-                all_assets_combined.append(combined)
-                processed_manual_asset_ids.add(ynab_id)
+                processed_assets.append(final_data)
 
-            # Process Liabilities
-            elif acc_type in potential_liability_types:
-                manual_details = manual_liabilities_data.get(ynab_id, {})
+            elif account_type in ['mortgage', 'studentLoan', 'autoLoan', 'personalLoan', 'otherLiability']:
+                manual_details = manual_liabilities.get(ynab_account_id, {})
+                final_data = {**ynab_data, **manual_details}
+                final_data.setdefault('id', ynab_account_id)
+                final_data.setdefault('name', ynab_account.name)
+                final_data['is_ynab'] = True
+                final_data['ynab_type'] = account_type
 
-                # --- Default Liability Type Mapping ---
-                assigned_liability_type = manual_details.get('liability_type') # Prioritize manual
-                if not assigned_liability_type:
-                    if acc_type == 'studentLoan':
-                        assigned_liability_type = "Student Loan"
-                    elif acc_type == 'autoLoan':
-                        assigned_liability_type = "Auto Loan"
-                    elif acc_type == 'mortgage':
-                         assigned_liability_type = "Mortgage"
-                    elif acc_type == 'personalLoan':
-                         assigned_liability_type = "Personal Loan"
-                    else: # otherLiability, lineOfCredit
-                        assigned_liability_type = acc_type # Fallback to raw YNAB type
-                # --- End Mapping ---
+                # --- Assign default type if not manually set ---
+                if not final_data.get('type') and not final_data.get('type_id'):
+                    default_type_name = YNAB_TO_LIABILITY_TYPE_NAME.get(account_type)
+                    if default_type_name:
+                        default_type_id = liability_type_map.get(default_type_name)
+                        if default_type_id:
+                            final_data['type_id'] = default_type_id # Set the type_id
+                            _LOGGER.debug(f"Assigned default liability type '{default_type_name}' (ID: {default_type_id}) to YNAB liability '{final_data['name']}'")
+                        else:
+                             _LOGGER.warning(f"Default liability type name '{default_type_name}' found in map but corresponding ID not found in current types map: {liability_type_map}")
+                    else:
+                         _LOGGER.debug(f"No default liability type mapping for YNAB type '{account_type}'")
+                # --- End Assign default type ---
 
-                combined = {
-                    **acc_dict,
-                    'liability_type': assigned_liability_type, # Use mapped type
-                    'type': assigned_liability_type, # Ensure consistent field name for frontend if needed
-                    'bank': manual_details.get('bank'), 'value': acc_dict.get('balance', 0),
-                    'value_last_updated': acc_dict.get('last_modified_on'),
-                    'interest_rate': manual_details.get('interest_rate'),
-                    'start_date': manual_details.get('start_date'),
-                    'notes': manual_details.get('notes', acc_dict.get('note')),
-                    'is_ynab': True, 'ynab_type': acc_type
-                }
-                combined_liabilities.append(combined)
-                processed_liability_ids.add(ynab_id)
 
-            # Process Credit Cards
-            elif acc_type in potential_credit_card_types:
-                manual_details = data_manager.get_manual_credit_card_details(ynab_id)
-                combined = {
-                    **acc_dict, # YNAB data comes first
-                    # Manually specified fields override YNAB where applicable
-                    'card_name': manual_details.get('card_name', acc_dict.get('name')),
-                    'bank': manual_details.get('bank'),
-                    'include_bank_in_name': manual_details.get('include_bank_in_name', True),
-                    'last_4_digits': manual_details.get('last_4_digits'),
-                    'expiration_date': manual_details.get('expiration_date'),
-                    'auto_pay_day_1': manual_details.get('auto_pay_day_1'),
-                    'auto_pay_day_2': manual_details.get('auto_pay_day_2'),
-                    'credit_limit': manual_details.get('credit_limit'),
-                    'payment_methods': manual_details.get('payment_methods', []),
-                    'notes': manual_details.get('notes', acc_dict.get('note')),
-                    # --- ADDED REWARD FIELDS ---
-                    'base_rate': manual_details.get('base_rate', 0.0),
-                    'reward_system': manual_details.get('reward_system', 'Cashback'),
-                    'points_program': manual_details.get('points_program'),
-                    'reward_structure_type': manual_details.get('reward_structure_type', 'Static'),
-                    # Explicitly include the reward rule arrays
-                    'static_rewards': manual_details.get('static_rewards', []),
-                    'rotating_rules': manual_details.get('rotating_rules', []),
-                    'dynamic_tiers': manual_details.get('dynamic_tiers', []),
-                    # Include period fields
-                    'rotation_period': manual_details.get('rotation_period'),
-                    'activation_period': manual_details.get('activation_period'),
-                }
+                processed_liabilities.append(final_data)
 
-                # --- Frontend Data Structure Alignment (Optional but good practice) ---
-                # Ensure necessary fields exist even if manual_details was empty
-                # (get_manual_credit_card_details should handle defaults, but belt-and-suspenders)
-                combined.setdefault('static_rewards', [])
-                combined.setdefault('rotating_rules', [])
-                combined.setdefault('dynamic_tiers', [])
+            elif account_type == 'creditCard':
+                 # Store YNAB data for cards to merge later
+                 processed_cards_from_ynab[ynab_account_id] = ynab_data
 
-                _LOGGER.debug(f"Combined credit card for {ynab_id}: {combined}")
-                combined_credit_cards.append(combined)
+    # --- Process Manual-Only Liabilities ---
+    manual_only_liabs_processed = []
+    for liab_id, details in manual_only_liabilities.items():
+        # Ensure basic structure and ID
+        processed_detail = details.copy()
+        processed_detail['id'] = liab_id
+        processed_detail['is_ynab'] = False # Mark as not from YNAB
+        processed_detail.setdefault('name', 'Unnamed Manual Liability')
+        # Ensure balance fields exist
+        processed_detail.setdefault('balance', 0)
+        processed_detail.setdefault('cleared_balance', 0)
+        processed_detail.setdefault('uncleared_balance', 0)
+        manual_only_liabs_processed.append(processed_detail)
 
-        # Add purely manual assets
-        for asset_id, data in manual_assets_dict.items():
-            if asset_id not in processed_manual_asset_ids:
-                data.setdefault('is_ynab', False)
-                data.setdefault('name', f"Manual Asset ({data.get('type', 'Unknown')})")
-                all_assets_combined.append(data)
+    # Combine YNAB-linked liabilities with manual-only liabilities
+    all_liabilities = processed_liabilities + manual_only_liabs_processed
 
-        # Add purely manual liabilities
-        for liability_id, data in manual_only_liabilities_dict.items():
-            if liability_id not in processed_liability_ids:
-                data.setdefault('is_ynab', False)
-                data.setdefault('name', f"Manual Liability ({data.get('type', 'Unknown')})")
-                data['liability_type'] = data.get('type') # Ensure consistency
-                combined_liabilities.append(data)
 
-        # --- Fetch Transactions (KEEP THIS) ---
-        try:
-            ninety_days_ago = (date.today() - timedelta(days=90)).isoformat()
-            _LOGGER.debug(f"Fetching regular transactions since {ninety_days_ago}...")
-            transactions_raw = ynab_client.get_transactions(since_date=ninety_days_ago) or []
-            transactions = [t.to_dict() for t in transactions_raw if hasattr(t, 'to_dict')]
-            _LOGGER.debug(f"Fetched {len(transactions)} regular transactions.")
+    # --- Process Credit Cards (Merge YNAB and Manual) ---
+    final_cards = []
+    processed_manual_card_ids = set()
 
-            _LOGGER.debug("Fetching scheduled transactions...")
-            scheduled_transactions_raw = ynab_client.get_scheduled_transactions() or []
-            scheduled_transactions = [st.to_dict() for st in scheduled_transactions_raw if hasattr(st, 'to_dict')]
-            _LOGGER.debug(f"Fetched {len(scheduled_transactions)} scheduled transactions.")
-        except Exception as e:
-            _LOGGER.error(f"Error fetching transactions: {e}", exc_info=True)
-            # Allow continuing even if transactions fail, just log the error
+    # Start with manually defined cards
+    for manual_card in manual_cards:
+        card_id = manual_card.get('id')
+        if not card_id:
+            _LOGGER.warning(f"Manual card missing ID, skipping: {manual_card.get('name', 'Unnamed')}")
+            continue
 
-        # --- REMOVED YNAB Category/Payee Fetching ---
-        # Categories and Payees will now solely come from data_manager below
+        processed_manual_card_ids.add(card_id)
+        ynab_card_data = processed_cards_from_ynab.get(card_id, {})
 
-        # --- Combine all data ---
-        all_data = {
-            "accounts": combined_accounts,
-            "assets": all_assets_combined,
-            "liabilities": combined_liabilities,
-            "credit_cards": combined_credit_cards,
-            "transactions": transactions,
-            "scheduled_transactions": scheduled_transactions,
-            # "categories": categories, # REMOVED YNAB categories
-            "managed_categories": data_manager.get_managed_categories(), # Use managed ones
-            "managed_payees": data_manager.get_managed_payees(),         # Use managed ones
-            "imported_ynab_payee_ids": data_manager.get_imported_ynab_payee_ids(), # Keep for now, might be unused later
-            "payment_methods": data_manager.get_payment_methods(),
-            "points_programs": data_manager.get_points_programs(),
-            "rewards_categories": data_manager.get_rewards_categories(), # Added
-            "rewards_payees": data_manager.get_rewards_payees(), # Added
-            "asset_types": data_manager.get_asset_types(),
-            "banks": data_manager.get_banks(),
-            "account_types": data_manager.get_account_types(), # Added missing account types
-            "liability_types": data_manager.get_liability_types()
+        # Merge: manual details take precedence over YNAB, except for balance fields maybe?
+        # Decide on merge strategy: manual usually overrides, but YNAB has live balance.
+        merged_card = {
+            **ynab_card_data, # Start with YNAB data (includes balance)
+            **manual_card,    # Override with manual details (name, bank, etc.)
+            'id': card_id,    # Ensure ID is correct
+            'is_ynab': card_id in processed_cards_from_ynab # Mark if it has a YNAB counterpart
         }
-        # Simplified log message
-        _LOGGER.debug(f"Returning all_data: Accounts={len(combined_accounts)}, Assets={len(all_assets_combined)}, Liabilities={len(combined_liabilities)}, CreditCards={len(combined_credit_cards)}, Transactions={len(transactions)}, Scheduled={len(scheduled_transactions)}, ManagedCategories={len(all_data['managed_categories'])}, ManagedPayees={len(all_data['managed_payees'])}")
-        return jsonify(all_data)
+        # Ensure required fields exist
+        merged_card.setdefault('name', 'Unnamed Card')
+        merged_card.setdefault('balance', ynab_card_data.get('balance', 0)) # Default to YNAB balance
+        merged_card.setdefault('cleared_balance', ynab_card_data.get('cleared_balance', 0))
+        merged_card.setdefault('uncleared_balance', ynab_card_data.get('uncleared_balance', 0))
 
-    except Exception as main_e:
-        _LOGGER.exception(f"Major error during get_all_data processing: {main_e}")
-        return jsonify({"error": f"Internal server error: {main_e}"}), 500
+        final_cards.append(merged_card)
+
+    # Add any YNAB cards that weren't in the manual list (should ideally be added manually)
+    for ynab_card_id, ynab_card_data in processed_cards_from_ynab.items():
+        if ynab_card_id not in processed_manual_card_ids:
+            _LOGGER.warning(f"YNAB Credit Card '{ynab_card_data.get('name')}' (ID: {ynab_card_id}) exists but has no manual entry. Adding with YNAB data only.")
+            card_data = {
+                **ynab_card_data,
+                'id': ynab_card_id,
+                'is_ynab': True,
+                # Add placeholders for required manual fields if necessary
+                'bank': None,
+                'last_4_digits': None,
+                # etc.
+            }
+            final_cards.append(card_data)
+
+
+    # --- Fetch other required data ---
+    banks = data_manager.get_banks()
+    account_types = data_manager.get_account_types()
+    asset_types = data_manager.get_asset_types()
+    liability_types = data_manager.get_liability_types()
+    payment_methods = data_manager.get_payment_methods()
+    points_programs = data_manager.get_points_programs()
+    rewards_categories = data_manager.get_rewards_categories()
+    rewards_payees = data_manager.get_rewards_payees()
+
+    # --- Return combined data ---
+    return jsonify({
+        "accounts": processed_accounts,
+        "assets": processed_assets,
+        "liabilities": all_liabilities, # Use the combined list
+        "credit_cards": final_cards, # Use the merged list
+        "banks": banks,
+        "account_types": account_types,
+        "asset_types": asset_types,
+        "liability_types": liability_types,
+        "payment_methods": payment_methods,
+        "points_programs": points_programs,
+        "rewards_categories": rewards_categories,
+        "rewards_payees": rewards_payees,
+        "last_updated": datetime.now().isoformat()
+    })
 
 @api_bp.route('/accounts')
 @supervisor_token_required
