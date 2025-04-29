@@ -27,9 +27,7 @@ const LIABILITIES_API = "liabilities";
 
 // Helper to format currency
 const formatCurrency = (value) => {
-  console.log(`[formatCurrency] Input value: ${value}, Type: ${typeof value}`); // Log input
   if (value == null || value === undefined || isNaN(value)) {
-    console.log("[formatCurrency] Returning N/A due to invalid input");
     return "N/A";
   }
   // Assume value is already in dollars, just format and take absolute
@@ -39,7 +37,6 @@ const formatCurrency = (value) => {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   }).format(Math.abs(value));
-  console.log(`[formatCurrency] Returning formatted value: ${formatted}`); // Log output
   return formatted;
 };
 
@@ -114,9 +111,6 @@ function LiabilitiesPage() {
         // Explicitly handle YNAB balance first (milliunits)
         if (isYnab && typeof liabObj.balance === "number") {
           currentBalanceInDollars = liabObj.balance / 1000.0; // Divide milliunits to get dollars
-          console.log(
-            `[YNAB Liability ${index}] Balance (milliunits): ${liabObj.balance}, Calculated (Dollars): ${currentBalanceInDollars}`
-          );
         } else if (!isYnab) {
           // Handle manual liability balance fields (assume already dollars)
           if (typeof liabObj.balance === "number") {
@@ -126,9 +120,6 @@ function LiabilitiesPage() {
           } else if (typeof liabObj.current_value === "number") {
             currentBalanceInDollars = liabObj.current_value;
           }
-          console.log(
-            `[Manual Liability ${index}] Calculated Balance (Dollars): ${currentBalanceInDollars}`
-          );
         } else {
           console.warn(
             `[YNAB Liability ${index}] Missing or invalid balance field:`,
@@ -137,49 +128,31 @@ function LiabilitiesPage() {
         }
 
         // Find type name from ID
-        // Log the types array structure once for debugging
-        if (index === 0) {
-          console.log("[Debug] Liability Types Array structure:", typesArray);
-        }
-        console.log(
-          `[Liability ${index}] Looking for type_id:`,
-          liabObj.type_id
-        );
         const typeObj = typesArray.find((t) => t && t.id === liabObj.type_id);
 
         let typeName;
         if (typeObj && typeObj.name) {
           typeName = typeObj.name; // Use the name from the found type object
-          console.log(
-            `[Liability ${index}] Found type object:`,
-            typeObj,
-            `Assigned typeName: ${typeName}`
-          );
         } else {
           // Fallback if lookup fails
           typeName = liabObj.type || "Unknown";
-          console.warn(
-            `[Liability ${index}] Type lookup failed for type_id '${liabObj.type_id}'. Falling back to type: '${typeName}'. TypeObj found:`,
-            typeObj
-          );
         }
 
         // Find bank name from ID (assuming banks are {id, name})
         const bankObj = banksArray.find((b) => b && b.id === liabObj.bank_id); // Use bank_id if available
         const bankName = bankObj ? bankObj.name : liabObj.bank || "N/A"; // Fallback to 'bank' field or N/A
 
+        // Spread original object FIRST, then override specific fields
         return {
-          id: liabObj.id || `manual-liab-${Date.now()}-${index}`,
-          name: liabObj.name || `Liability ${index + 1}`,
-          type: typeName,
-          type_id: liabObj.type_id, // Keep the ID
-          bank: bankName,
-          bank_id: liabObj.bank_id, // Keep the ID
-          balance: currentBalanceInDollars, // Store the final dollar amount
+          ...liabObj, // Spread original object first
+          id: liabObj.id || `manual-liab-${Date.now()}-${index}`, // Ensure ID exists
+          name: liabObj.name || `Liability ${index + 1}`, // Ensure name exists
+          type: typeName, // Use the calculated Title Case type name
+          bank: bankName, // Use the looked-up bank name
+          balance: currentBalanceInDollars, // Use the calculated dollar amount
           interest_rate: liabObj.interest_rate, // Assuming it's a decimal
           start_date: liabObj.start_date,
           is_ynab: isYnab,
-          ...liabObj, // Include other properties
         };
       });
 
@@ -294,11 +267,6 @@ function LiabilitiesPage() {
       flex: 1,
       // Explicitly render the value from the 'type' field
       renderCell: (params) => {
-        // Log the value being rendered for the Type column
-        console.log(
-          `[Type Render] ID: ${params.id}, Value being rendered:`,
-          params.value
-        );
         return params.value;
       },
     },
@@ -318,11 +286,6 @@ function LiabilitiesPage() {
       align: "right",
       headerAlign: "right",
       renderCell: (params) => {
-        // Log the exact value received by renderCell before formatting
-        console.log(
-          `[Balance Render] ID: ${params.id}, Value received by renderCell:`,
-          params.value
-        );
         return formatCurrency(params.value);
       },
     },
