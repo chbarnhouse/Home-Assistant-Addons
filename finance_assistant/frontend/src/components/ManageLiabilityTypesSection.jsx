@@ -381,7 +381,7 @@ function ManageLiabilityTypesSection({ liabilityTypes = [], onUpdate }) {
   return (
     <Paper elevation={2} sx={{ p: 3, mb: 3 }}>
       <Typography variant="h6" gutterBottom component="div">
-        Manage Liability Types // Changed text
+        Manage Liability Types
       </Typography>
       <Divider sx={{ my: 2 }} />
 
@@ -431,8 +431,7 @@ function ManageLiabilityTypesSection({ liabilityTypes = [], onUpdate }) {
           typesList.map(renderTypeItem)
         ) : (
           <ListItem dense>
-            <ListItemText primary="No liability types defined yet." /> //
-            Changed text
+            <ListItemText primary="No liability types defined yet." />
           </ListItem>
         )}
       </List>

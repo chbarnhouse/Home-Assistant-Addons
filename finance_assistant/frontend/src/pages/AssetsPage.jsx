@@ -193,17 +193,6 @@ function AssetsPage() {
     fetchAssets();
   };
 
-  // --- Manage Banks Handlers ---
-  const [openManageBanksModal, setOpenManageBanksModal] = useState(false);
-  const handleOpenManageBanksModal = () => setOpenManageBanksModal(true);
-  const handleCloseManageBanksModal = () => setOpenManageBanksModal(false);
-  const handleUpdateBanks = (updatedBanks) => {
-    setBanks(updatedBanks);
-    setError(null);
-    notify("Banks updated successfully!", "success");
-  };
-  // ---------------------------------
-
   // Helper to format date/time
   const formatDateTime = (isoString) => {
     if (!isoString) return "N/A";
@@ -387,14 +376,6 @@ function AssetsPage() {
           >
             Add Asset
           </Button>
-          <Button
-            onClick={handleOpenManageBanksModal}
-            size="small"
-            startIcon={<SettingsIcon />}
-            disabled={isLoading || !!deletingAssetId || openEditModal}
-          >
-            Manage Banks
-          </Button>
         </Box>
       </Box>
 
@@ -460,14 +441,6 @@ function AssetsPage() {
           banks={banks}
         />
       )}
-
-      {/* Manage Banks Modal */}
-      <ManageBanksModal
-        open={openManageBanksModal}
-        onClose={handleCloseManageBanksModal}
-        banks={banks}
-        onUpdate={handleUpdateBanks}
-      />
 
       {/* Delete Confirmation Dialog */}
       <Dialog
