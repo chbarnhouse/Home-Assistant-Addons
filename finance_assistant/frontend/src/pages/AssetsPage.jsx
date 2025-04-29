@@ -9,7 +9,6 @@ import IconButton from "@mui/material/IconButton";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import { DataGrid } from "@mui/x-data-grid";
-import ManageAssetTypesModal from "../components/ManageAssetTypesModal";
 import AddAssetModal from "../components/AddAssetModal";
 import EditAssetModal from "../components/EditAssetModal";
 import ManageBanksModal from "../components/ManageBanksModal";
@@ -39,7 +38,6 @@ function AssetsPage() {
 
   // Modal States
   const [openAddModal, setOpenAddModal] = useState(false);
-  const [openManageTypesModal, setOpenManageTypesModal] = useState(false);
   const [openEditModal, setOpenEditModal] = useState(false);
   const [assetToEdit, setAssetToEdit] = useState(null);
 
@@ -194,16 +192,6 @@ function AssetsPage() {
     notify("Asset updated successfully!", "success");
     fetchAssets();
   };
-
-  // --- Manage Asset Types Handlers ---
-  const handleOpenManageTypesModal = () => setOpenManageTypesModal(true);
-  const handleCloseManageTypesModal = () => setOpenManageTypesModal(false);
-  const handleUpdateAssetTypes = (updatedTypes) => {
-    setAssetTypes(updatedTypes);
-    setError(null);
-    notify("Asset types updated successfully!", "success");
-  };
-  // ---------------------------------
 
   // --- Manage Banks Handlers ---
   const [openManageBanksModal, setOpenManageBanksModal] = useState(false);
@@ -395,19 +383,9 @@ function AssetsPage() {
             variant="contained"
             startIcon={<AddIcon />}
             onClick={handleOpenAddModal}
-            sx={{ mr: 2 }}
-            disabled={isLoading || !!deletingAssetId || openEditModal}
+            sx={{ mr: 1 }}
           >
-            Add New Asset
-          </Button>
-          <Button
-            onClick={handleOpenManageTypesModal}
-            size="small"
-            startIcon={<SettingsIcon />}
-            disabled={isLoading || !!deletingAssetId || openEditModal}
-            sx={{ mr: 2 }}
-          >
-            Manage Types
+            Add Asset
           </Button>
           <Button
             onClick={handleOpenManageBanksModal}
@@ -469,8 +447,6 @@ function AssetsPage() {
         onAdd={handleAddAsset}
         assetTypes={assetTypes}
         banks={banks}
-        onOpenManageAssetTypes={handleOpenManageTypesModal}
-        onOpenManageBanks={handleOpenManageBanksModal}
       />
 
       {/* Edit Asset Modal */}
@@ -482,18 +458,8 @@ function AssetsPage() {
           onUpdateAsset={handleUpdateAsset}
           assetTypes={assetTypes}
           banks={banks}
-          onOpenManageAssetTypes={handleOpenManageTypesModal}
-          onOpenManageBanks={handleOpenManageBanksModal}
         />
       )}
-
-      {/* Manage Asset Types Modal */}
-      <ManageAssetTypesModal
-        open={openManageTypesModal}
-        onClose={handleCloseManageTypesModal}
-        assetTypes={assetTypes}
-        onUpdate={handleUpdateAssetTypes}
-      />
 
       {/* Manage Banks Modal */}
       <ManageBanksModal

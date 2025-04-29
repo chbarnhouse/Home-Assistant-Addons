@@ -18,6 +18,8 @@ import ManagePaymentMethodsSection from "../components/ManagePaymentMethodsSecti
 import ManageRewardsCategoriesSection from "../components/ManageRewardsCategoriesSection";
 import ManageRewardsPayeesSection from "../components/ManageRewardsPayeesSection";
 import ManagePointsProgramsSection from "../components/ManagePointsProgramsSection";
+import ManageLiabilityTypesSection from "../components/ManageLiabilityTypesSection";
+import ManageAssetTypesSection from "../components/ManageAssetTypesSection";
 
 function SettingsPage() {
   const { mode, setMode } = useThemeContext();
@@ -25,6 +27,8 @@ function SettingsPage() {
 
   const [banks, setBanks] = useState([]);
   const [accountTypes, setAccountTypes] = useState([]);
+  const [liabilityTypes, setLiabilityTypes] = useState([]);
+  const [assetTypes, setAssetTypes] = useState([]);
   const [paymentMethods, setPaymentMethods] = useState([]);
   const [rewardsCategories, setRewardsCategories] = useState([]);
   const [rewardsPayees, setRewardsPayees] = useState([]);
@@ -54,6 +58,16 @@ function SettingsPage() {
 
       setBanks(banksData || []);
       setAccountTypes(accountTypesData || []);
+      setLiabilityTypes(
+        Array.isArray(accountTypesData.liability_types)
+          ? accountTypesData.liability_types
+          : []
+      );
+      setAssetTypes(
+        Array.isArray(accountTypesData.asset_types)
+          ? accountTypesData.asset_types
+          : []
+      );
       setPaymentMethods(paymentMethodsData || []);
       setRewardsCategories(rewardsCategoriesData || []);
       setRewardsPayees(rewardsPayeesData || []);
@@ -80,6 +94,17 @@ function SettingsPage() {
     console.log(`Changing theme preference to: ${newPreference}`);
     setMode(newPreference);
   };
+
+  const handleUpdateBanks = (updatedBanks) => setBanks(updatedBanks);
+  const handleUpdateAccountTypes = (updatedTypes) =>
+    setAccountTypes(updatedTypes);
+  const handleUpdateLiabilityTypes = (updatedTypes) =>
+    setLiabilityTypes(updatedTypes);
+  const handleUpdateAssetTypes = (updatedTypes) => setAssetTypes(updatedTypes);
+  const handleUpdatePaymentMethods = (updatedMethods) =>
+    setPaymentMethods(updatedMethods);
+  const handleUpdatePointsPrograms = (updatedPrograms) =>
+    setPointsPrograms(updatedPrograms);
 
   return (
     <Box sx={{ p: 3 }}>
@@ -132,18 +157,30 @@ function SettingsPage() {
           </Typography>
           <Grid container spacing={3}>
             <Grid item xs={12} md={6} lg={4}>
-              <ManageBanksSection banks={banks} onUpdate={handleDataChanged} />
+              <ManageBanksSection banks={banks} onUpdate={handleUpdateBanks} />
             </Grid>
             <Grid item xs={12} md={6} lg={4}>
               <ManageAccountTypesSection
                 accountTypes={accountTypes}
-                onUpdate={handleDataChanged}
+                onUpdate={handleUpdateAccountTypes}
+              />
+            </Grid>
+            <Grid item xs={12} md={6} lg={4}>
+              <ManageLiabilityTypesSection
+                liabilityTypes={liabilityTypes}
+                onUpdate={handleUpdateLiabilityTypes}
+              />
+            </Grid>
+            <Grid item xs={12} md={6} lg={4}>
+              <ManageAssetTypesSection
+                assetTypes={assetTypes}
+                onUpdate={handleUpdateAssetTypes}
               />
             </Grid>
             <Grid item xs={12} md={6} lg={4}>
               <ManagePaymentMethodsSection
                 paymentMethods={paymentMethods}
-                onUpdate={handleDataChanged}
+                onUpdate={handleUpdatePaymentMethods}
               />
             </Grid>
             <Grid item xs={12} md={6} lg={4}>
@@ -161,7 +198,7 @@ function SettingsPage() {
             <Grid item xs={12} md={6} lg={4}>
               <ManagePointsProgramsSection
                 pointsPrograms={pointsPrograms}
-                onUpdate={handleDataChanged}
+                onUpdate={handleUpdatePointsPrograms}
               />
             </Grid>
           </Grid>
