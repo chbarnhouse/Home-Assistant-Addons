@@ -303,7 +303,14 @@ function LiabilitiesPage() {
       flex: 1,
       align: "right",
       headerAlign: "right",
-      renderCell: (params) => formatCurrency(params.value),
+      renderCell: (params) => {
+        // Log the exact value received by renderCell before formatting
+        console.log(
+          `[Balance Render] ID: ${params.id}, Value received by renderCell:`,
+          params.value
+        );
+        return formatCurrency(params.value);
+      },
     },
     {
       field: "interest_rate",

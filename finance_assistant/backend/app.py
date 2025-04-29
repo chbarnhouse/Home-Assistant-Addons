@@ -370,17 +370,21 @@ def get_all_data():
                 final_data['ynab_type'] = account_type
 
                 # --- Assign default type if not manually set ---
-                if not final_data.get('type') and not final_data.get('type_id'):
+                # Check if a valid type_id is already set. Ignore potentially outdated 'type' string field.
+                if not final_data.get('type_id'):
+                    _LOGGER.debug(f"Liability '{final_data['name']}' has no type_id. Checking for default assignment. Existing 'type' field: {final_data.get('type')}")
                     default_type_name = YNAB_TO_LIABILITY_TYPE_NAME.get(account_type)
                     if default_type_name:
                         default_type_id = liability_type_map.get(default_type_name)
                         if default_type_id:
                             final_data['type_id'] = default_type_id # Set the type_id
-                            _LOGGER.debug(f"Assigned default liability type '{default_type_name}' (ID: {default_type_id}) to YNAB liability '{final_data['name']}'")
+                            _LOGGER.info(f"Assigned default liability type '{default_type_name}' (ID: {default_type_id}) to YNAB liability '{final_data['name']}'")
                         else:
                              _LOGGER.warning(f"Default liability type name '{default_type_name}' found in map but corresponding ID not found in current types map: {liability_type_map}")
                     else:
                          _LOGGER.debug(f"No default liability type mapping for YNAB type '{account_type}'")
+                else:
+                    _LOGGER.debug(f"Liability '{final_data['name']}' already has type_id: {final_data['type_id']}. Skipping default assignment.")
                 # --- End Assign default type ---
 
 
