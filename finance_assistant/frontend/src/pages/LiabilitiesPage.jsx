@@ -105,25 +105,61 @@ function LiabilitiesPage() {
         const isYnab = !!liabObj.is_ynab;
         let currentBalance = null;
 
-        // YNAB balance is in milliunits and negative
+        // Explicitly handle YNAB balance first (milliunits)
         if (isYnab && typeof liabObj.balance === "number") {
-          currentBalance = liabObj.balance / 1000.0;
-        } else if (!isYnab && typeof liabObj.balance === "number") {
-          // Handle potential manual balance field (assume it's already in dollars)
-          currentBalance = liabObj.balance;
-        } else if (typeof liabObj.value === "number") {
-          currentBalance = liabObj.value; // Manual liabilities might use 'value'
-        } else if (typeof liabObj.current_value === "number") {
-          currentBalance = liabObj.current_value;
+          currentBalance = liabObj.balance / 1000.0; // Divide milliunits
+          console.log(
+            `[YNAB Liability ${index}] Balance (milliunits): ${liabObj.balance}, Calculated: ${currentBalance}`
+          );
+        } else if (!isYnab) {
+          // Handle manual liability balance fields (assume already dollars)
+          if (typeof liabObj.balance === "number") {
+            currentBalance = liabObj.balance;
+          } else if (typeof liabObj.value === "number") {
+            currentBalance = liabObj.value;
+          } else if (typeof liabObj.current_value === "number") {
+            currentBalance = liabObj.current_value;
+          }
+          console.log(
+            `[Manual Liability ${index}] Calculated Balance: ${currentBalance}`
+          );
+        } else {
+          console.warn(
+            `[YNAB Liability ${index}] Missing or invalid balance field:`,
+            liabObj.balance
+          );
         }
 
         // Find type name from ID
-        const typeObj = typesArray.find((t) => t.id === liabObj.type_id);
-        // Prioritize name from the matched type object (which should be Title Case)
-        const typeName = typeObj ? typeObj.name : liabObj.type || "Unknown";
+        // Log the types array structure once for debugging
+        if (index === 0) {
+          console.log("[Debug] Liability Types Array structure:", typesArray);
+        }
+        console.log(
+          `[Liability ${index}] Looking for type_id:`,
+          liabObj.type_id
+        );
+        const typeObj = typesArray.find((t) => t && t.id === liabObj.type_id);
+
+        let typeName;
+        if (typeObj && typeObj.name) {
+          typeName = typeObj.name; // Use the name from the found type object
+          console.log(
+            `[Liability ${index}] Found type object:`,
+            typeObj,
+            `Assigned typeName: ${typeName}`
+          );
+        } else {
+          // Fallback if lookup fails
+          typeName = liabObj.type || "Unknown";
+          console.warn(
+            `[Liability ${index}] Type lookup failed for type_id '${liabObj.type_id}'. Falling back to type: '${typeName}'. TypeObj found:`,
+            typeObj
+          );
+        }
 
         // Find bank name from ID (assuming banks are {id, name})
-        const bankObj = banksArray.find((b) => b.id === liabObj.bank_id); // Use bank_id if available
+        const bankObj = banksArray.find((b) => b && b.id === liabObj.bank_id); // Use bank_id if available
         const bankName = bankObj ? bankObj.name : liabObj.bank || "N/A"; // Fallback to 'bank' field or N/A
 
         return {
