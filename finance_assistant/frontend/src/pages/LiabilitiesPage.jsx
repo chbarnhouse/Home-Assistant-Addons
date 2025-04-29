@@ -1,38 +1,40 @@
 import React, { useState, useEffect, useCallback } from "react";
 import Box from "@mui/material/Box";
-import Typography from "@mui/material/Typography";
 import Button from "@mui/material/Button";
-import CircularProgress from "@mui/material/CircularProgress";
+import Typography from "@mui/material/Typography";
 import Paper from "@mui/material/Paper";
+import AddIcon from "@mui/icons-material/Add";
+import CircularProgress from "@mui/material/CircularProgress";
 import IconButton from "@mui/material/IconButton";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
-import SettingsIcon from "@mui/icons-material/Settings"; // Icon for Manage Types
-import Chip from "@mui/material/Chip"; // To distinguish YNAB vs Manual
+import { DataGrid } from "@mui/x-data-grid";
 import Alert from "@mui/material/Alert";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
-import { DataGrid } from "@mui/x-data-grid"; // Import DataGrid
 import { useSnackbar } from "../context/SnackbarContext";
 import { fetchAllData, callApi } from "../utils/api"; // Import the API utility functions
 
 // Import Modals
 import AddLiabilityModal from "../components/AddLiabilityModal";
 import EditLiabilityModal from "../components/EditLiabilityModal";
-import ManageLiabilityTypesModal from "../components/ManageLiabilityTypesModal"; // Import Manage Types Modal
+
+// Define API endpoint
+const LIABILITIES_API = "liabilities";
 
 // Helper to format currency
 const formatCurrency = (value) => {
-  if (value == null || value === undefined) return "N/A";
+  if (value == null || value === undefined || isNaN(value)) return "N/A";
+  // Liabilities are often negative, show absolute value
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency: "USD",
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
-  }).format(value);
+  }).format(Math.abs(value));
 };
 
 // Helper to format dates
@@ -41,10 +43,11 @@ const formatDate = (dateString) => {
   try {
     const date = new Date(dateString);
     if (isNaN(date.getTime())) return "Invalid date";
+    // Use consistent date format
     return date.toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
       year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
     });
   } catch (error) {
     console.error("Error formatting date:", error);
@@ -52,12 +55,10 @@ const formatDate = (dateString) => {
   }
 };
 
-// Helper to format liability type name
-const formatLiabilityTypeName = (typeName) => {
-  if (!typeName) return "Uncategorized";
-  return typeName
-    .replace(/([A-Z])/g, " $1")
-    .replace(/^./, (str) => str.toUpperCase());
+// Helper to format percentage
+const formatPercentage = (value) => {
+  if (value == null || isNaN(value)) return "N/A";
+  return `${(value * 100).toFixed(2)}%`; // Assuming value is a decimal like 0.05
 };
 
 function LiabilitiesPage() {
@@ -74,7 +75,6 @@ function LiabilitiesPage() {
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
   const [liabilityToDelete, setLiabilityToDelete] = useState(null);
   const [isDeleting, setIsDeleting] = useState(false); // For delete loading state
-  const [isManageTypesModalOpen, setIsManageTypesModalOpen] = useState(false); // State for Manage Types modal
 
   const { notify } = useSnackbar();
 
@@ -83,52 +83,64 @@ function LiabilitiesPage() {
     setError(null);
     try {
       const data = await fetchAllData();
-      console.log("Fetched liabilities data from all_data:", data);
+      console.log("Received all_data for liabilities page:", data);
 
-      // IMPORTANT: Add defensive checks to ensure data exists and has expected shape
       if (!data || typeof data !== "object") {
         throw new Error("Invalid data format received from API");
       }
 
-      // Ensure all liabilities have a unique ID for DataGrid, safely handle possible undefined values
       const liabilitiesArray = Array.isArray(data.liabilities)
         ? data.liabilities
+        : [];
+      const banksArray = Array.isArray(data.banks) ? data.banks : [];
+      const typesArray = Array.isArray(data.liability_types)
+        ? data.liability_types
         : [];
 
       console.log("Raw liabilities data:", liabilitiesArray);
 
-      // Process the liabilities data before setting state
-      const processedLiabilities = processLiabilities(liabilitiesArray);
+      // Process liabilities for DataGrid
+      const processedLiabilities = liabilitiesArray.map((liability, index) => {
+        const liabObj = liability || {};
+        const isYnab = !!liabObj.is_ynab;
+        let currentBalance = null;
+
+        // YNAB balance is in milliunits and negative
+        if (isYnab && typeof liabObj.balance === "number") {
+          currentBalance = liabObj.balance / 1000.0;
+        } else if (typeof liabObj.value === "number") {
+          currentBalance = liabObj.value; // Manual liabilities might use 'value'
+        } else if (typeof liabObj.current_value === "number") {
+          currentBalance = liabObj.current_value;
+        }
+
+        // Find type name from ID
+        const typeObj = typesArray.find((t) => t.id === liabObj.type_id);
+        const typeName = typeObj ? typeObj.name : liabObj.type || "Unknown"; // Fallback to old 'type' field or 'Unknown'
+
+        // Find bank name from ID (assuming banks are {id, name})
+        const bankObj = banksArray.find((b) => b.id === liabObj.bank_id); // Use bank_id if available
+        const bankName = bankObj ? bankObj.name : liabObj.bank || "N/A"; // Fallback to 'bank' field or N/A
+
+        return {
+          id: liabObj.id || `manual-liab-${Date.now()}-${index}`,
+          name: liabObj.name || `Liability ${index + 1}`,
+          type: typeName,
+          type_id: liabObj.type_id, // Keep the ID
+          bank: bankName,
+          bank_id: liabObj.bank_id, // Keep the ID
+          balance: currentBalance, // Keep it signed for potential calculations, format in renderCell
+          interest_rate: liabObj.interest_rate, // Assuming it's a decimal
+          start_date: liabObj.start_date,
+          is_ynab: isYnab,
+          ...liabObj, // Include other properties
+        };
+      });
+
       console.log("Processed liabilities data:", processedLiabilities);
       setLiabilities(processedLiabilities);
-
-      // Add defensive checks for all dependent data
-      setLiabilityTypes(
-        Array.isArray(data.liability_types)
-          ? data.liability_types
-          : ["Loan", "Other Manual"]
-      );
-
-      // Safely extract unique bank names from accounts/liabilities/credit_cards
-      const accountBanks = Array.isArray(data.accounts)
-        ? data.accounts.map((a) => a?.bank).filter(Boolean)
-        : [];
-
-      const liabilityBanks = Array.isArray(data.liabilities)
-        ? data.liabilities.map((l) => l?.bank).filter(Boolean)
-        : [];
-
-      const creditCardBanks = Array.isArray(data.credit_cards)
-        ? data.credit_cards.map((c) => c?.bank).filter(Boolean)
-        : [];
-
-      const uniqueBanks = [
-        ...new Set([...accountBanks, ...liabilityBanks, ...creditCardBanks]),
-      ]
-        .sort()
-        .map((name) => ({ name })); // Format for Select component
-
-      setBanks(uniqueBanks || []);
+      setLiabilityTypes(typesArray);
+      setBanks(banksArray); // Banks should be [{id, name}]
     } catch (err) {
       console.error("Error fetching liabilities data:", err);
       setError(err.message || "Failed to fetch liabilities. Please try again.");
@@ -146,24 +158,25 @@ function LiabilitiesPage() {
   }, [fetchData]);
 
   // --- Add Handlers ---
+
   const handleOpenAddModal = () => setIsAddModalOpen(true);
   const handleCloseAddModal = () => setIsAddModalOpen(false);
   const handleAddLiability = (newLiability) => {
-    // Assuming backend returns the full new liability object including id
-    setLiabilities((prev) => [...prev, newLiability.liability || newLiability]); // Adapt based on API response structure
-    // Notification is handled within the modal on success
-    // Optionally refetch: fetchData();
+    // Assuming the modal calls the API and handles success notification
+    // Refetch data to get the updated list with the new ID
+    fetchData();
+    handleCloseAddModal(); // Close modal after adding
   };
 
   // --- Edit Handlers ---
+
   const handleOpenEditModal = (liability) => {
     if (liability.is_ynab) {
-      notify(
-        "Editing YNAB-linked liabilities directly is not yet supported.",
-        "info"
-      );
-      // TODO: Potentially allow editing manual *fields* on YNAB items in the future
-      return;
+      // For now, only allow editing manual liabilities fully
+      // Could potentially allow editing *some* fields of YNAB ones later
+      // Let's allow editing YNAB details like type/bank for now
+      console.log("Editing YNAB-linked liability:", liability);
+      // notify("Editing some fields of YNAB-linked liabilities is possible.", "info");
     }
     setLiabilityToEdit(liability);
     setIsEditModalOpen(true);
@@ -173,16 +186,19 @@ function LiabilitiesPage() {
     setIsEditModalOpen(false);
   };
   const handleUpdateLiability = (updatedLiability) => {
-    setLiabilities((prev) =>
-      prev.map((l) => (l.id === updatedLiability.id ? updatedLiability : l))
-    );
-    // Notification handled within modal
+    // Assuming the modal calls the API and handles success notification
+    fetchData(); // Refetch data to reflect changes
+    handleCloseEditModal();
   };
 
   // --- Delete Handlers ---
+
   const handleOpenDeleteConfirm = (liability) => {
     if (liability.is_ynab) {
-      notify("Cannot delete YNAB-linked liabilities.", "warning");
+      notify(
+        "Cannot delete YNAB-linked liabilities via this interface.",
+        "warning"
+      );
       return;
     }
     setLiabilityToDelete(liability);
@@ -200,293 +216,110 @@ function LiabilitiesPage() {
 
     setIsDeleting(true);
     try {
-      await callApi(`liabilities/${liabilityToDelete.id}`, {
+      // Use the correct API endpoint structure
+      await callApi(`${LIABILITIES_API}/${liabilityToDelete.id}`, {
         method: "DELETE",
       });
 
-      setLiabilities((prev) =>
-        prev.filter((l) => l.id !== liabilityToDelete.id)
-      );
       notify("Liability deleted successfully!", "success");
       handleCloseDeleteConfirm();
+      fetchData(); // Refetch data after deletion
     } catch (err) {
       console.error("Error deleting liability:", err);
       notify(err.message || "Could not delete liability.", "error");
-      handleCloseDeleteConfirm(); // Close dialog even on error for now
-    } finally {
-      // Ensure loading state is reset even if error occurs before fetch finishes
-      setIsDeleting(false);
+      setIsDeleting(false); // Ensure loading state is reset on error
     }
+    // No finally needed here as state is reset in success/error path or close handler
   };
   // --- End Delete Handlers ---
 
-  // --- Manage Types Handlers ---
-  const handleOpenManageTypesModal = () => setIsManageTypesModalOpen(true);
-  const handleCloseManageTypesModal = () => setIsManageTypesModalOpen(false);
-  const handleUpdateLiabilityTypes = (updatedTypes) => {
-    // Update the state used by Add/Edit modals
-    setLiabilityTypes(updatedTypes);
-    // Optionally refetch all data if type changes could impact display
-    // fetchData();
-  };
-
-  // Function to process liabilities data for presentation
-  const processLiabilities = (liabilities) => {
-    console.log("Processing liabilities with data:", liabilities);
-
-    return liabilities.map((liability, index) => {
-      console.log(`Processing liability #${index}:`, liability);
-
-      // For YNAB liabilities, data comes in milliunits (divide by 1000 to get dollars)
-      const isYnab = !!liability.is_ynab;
-
-      // Handle balance - different fields for different liability types
-      let currentBalance = null;
-      if (isYnab) {
-        if (typeof liability.balance === "number") {
-          currentBalance = Math.abs(liability.balance) / 1000;
-        } else if (typeof liability.cleared_balance === "number") {
-          currentBalance = Math.abs(liability.cleared_balance) / 1000;
-        }
-      } else {
-        if (typeof liability.current_balance === "number") {
-          currentBalance = liability.current_balance;
-        } else if (typeof liability.value === "number") {
-          currentBalance = Math.abs(liability.value);
-        }
-      }
-
-      // Handle original amount
-      let originalAmount = null;
-      if (isYnab) {
-        if (typeof liability.original_balance === "number") {
-          originalAmount = Math.abs(liability.original_balance) / 1000;
-        } else if (typeof liability.starting_balance === "number") {
-          originalAmount = Math.abs(liability.starting_balance) / 1000;
-        } else if (currentBalance !== null) {
-          originalAmount = currentBalance; // Fallback
-        }
-      } else {
-        if (typeof liability.original_amount === "number") {
-          originalAmount = liability.original_amount;
-        } else if (typeof liability.value === "number") {
-          originalAmount = Math.abs(liability.value);
-        } else if (currentBalance !== null) {
-          originalAmount = currentBalance; // Fallback
-        }
-      }
-
-      // Handle interest rate
-      let interestRate = null;
-      if (typeof liability.interest_rate === "number") {
-        interestRate =
-          liability.interest_rate < 1
-            ? liability.interest_rate * 100
-            : liability.interest_rate;
-      } else if (typeof liability.apr === "number") {
-        interestRate = liability.apr < 1 ? liability.apr * 100 : liability.apr;
-      }
-
-      // Handle minimum payment
-      let minimumPayment = null;
-      if (isYnab) {
-        if (typeof liability.minimum_payment === "number") {
-          minimumPayment = Math.abs(liability.minimum_payment) / 1000;
-        } else if (typeof liability.min_payment === "number") {
-          minimumPayment = Math.abs(liability.min_payment) / 1000;
-        }
-      } else {
-        if (typeof liability.minimum_payment === "number") {
-          minimumPayment = liability.minimum_payment;
-        } else if (typeof liability.min_payment === "number") {
-          minimumPayment = liability.min_payment;
-        }
-      }
-
-      // Create the final object with uniform field names
-      const result = {
-        id:
-          liability.id ||
-          liability.account_id ||
-          `liability-${Date.now()}-${index}`,
-        name:
-          liability.name ||
-          liability.account_name ||
-          `Unnamed Liability ${index + 1}`,
-        type: (
-          liability.type ||
-          liability.account_type ||
-          "otherLiability"
-        ).toString(),
-        institution: liability.institution || liability.bank || "N/A",
-        is_ynab: isYnab,
-        originalAmount,
-        currentBalance,
-        interestRate,
-        minimumPayment,
-        paymentDueDate:
-          liability.payment_due_date ||
-          liability.next_payment_date ||
-          liability.due_date ||
-          null,
-      };
-
-      console.log(`Final processed liability #${index}:`, result);
-      return result;
-    });
-  };
-
-  // Define columns for DataGrid with simplified structure
+  // Define DataGrid columns
   const columns = [
     {
       field: "name",
-      headerName: "Name",
-      minWidth: 200,
+      headerName: "Liability Name",
+      minWidth: 180,
       flex: 1.5,
-      renderCell: (params) => {
-        if (!params || !params.row) return "N/A";
-        return (
-          <Box sx={{ display: "flex", alignItems: "center" }}>
-            {params.row.name || "Unnamed Liability"}
-            {params.row.is_ynab && (
-              <Chip
-                label="YNAB"
-                size="small"
-                color="primary"
-                variant="outlined"
-                sx={{ ml: 1, height: 20 }}
-              />
-            )}
-          </Box>
-        );
-      },
     },
     {
       field: "type",
       headerName: "Type",
       minWidth: 150,
       flex: 1,
-      valueFormatter: (params) => {
-        if (!params || params.value == null) return "Other";
-        return formatLiabilityTypeName(params.value);
-      },
+      // Potentially add renderCell with Autocomplete later if needed
     },
     {
-      field: "institution",
+      field: "bank",
       headerName: "Bank/Institution",
       minWidth: 150,
       flex: 1,
+      // Potentially add renderCell with Autocomplete later if needed
     },
     {
-      field: "originalAmount",
-      headerName: "Original Amount",
-      minWidth: 150,
-      flex: 1,
-      align: "right",
-      headerAlign: "right",
-      renderCell: (params) => {
-        if (!params || !params.row || params.row.originalAmount == null)
-          return "N/A";
-        return formatCurrency(params.row.originalAmount);
-      },
-    },
-    {
-      field: "currentBalance",
+      field: "balance",
       headerName: "Current Balance",
-      minWidth: 150,
+      type: "number",
+      minWidth: 130,
       flex: 1,
       align: "right",
       headerAlign: "right",
-      renderCell: (params) => {
-        if (!params || !params.row || params.row.currentBalance == null)
-          return "N/A";
-        return formatCurrency(params.row.currentBalance);
-      },
+      renderCell: (params) => formatCurrency(params.value),
     },
     {
-      field: "interestRate",
+      field: "interest_rate",
       headerName: "Interest Rate",
-      minWidth: 150,
-      flex: 1,
+      type: "number",
+      minWidth: 120,
+      flex: 0.8,
       align: "right",
       headerAlign: "right",
-      renderCell: (params) => {
-        if (!params || !params.row || params.row.interestRate == null)
-          return "N/A";
-        return `${params.row.interestRate.toFixed(2)}%`;
-      },
+      renderCell: (params) => formatPercentage(params.value),
     },
     {
-      field: "minimumPayment",
-      headerName: "Minimum Payment",
-      minWidth: 150,
-      flex: 1,
-      align: "right",
-      headerAlign: "right",
-      renderCell: (params) => {
-        if (!params || !params.row || params.row.minimumPayment == null)
-          return "N/A";
-        return formatCurrency(params.row.minimumPayment);
-      },
-    },
-    {
-      field: "paymentDueDate",
-      headerName: "Payment Due Date",
-      minWidth: 150,
-      flex: 1,
-      align: "right",
-      headerAlign: "right",
-      renderCell: (params) => {
-        if (!params || !params.row || !params.row.paymentDueDate) return "N/A";
-        return formatDate(params.row.paymentDueDate);
-      },
+      field: "start_date",
+      headerName: "Start Date",
+      minWidth: 120,
+      flex: 0.8,
+      renderCell: (params) => formatDate(params.value),
     },
     {
       field: "actions",
       headerName: "Actions",
-      width: 120,
       sortable: false,
-      filterable: false,
       disableColumnMenu: true,
+      width: 100,
       align: "center",
-      renderCell: (params) => {
-        // Defensive check to ensure params and params.row exist
-        if (!params || !params.row) return null;
-
-        const isRowYnab = params.row.is_ynab;
-        return (
-          <Box>
-            <IconButton
-              onClick={() => handleOpenEditModal(params.row)}
-              disabled={isRowYnab}
-              title={isRowYnab ? "Cannot edit YNAB liabilities" : "Edit"}
-              size="small"
-              sx={{ mr: 1 }}
-            >
-              <EditIcon
-                fontSize="small"
-                color={isRowYnab ? "disabled" : "primary"}
-              />
-            </IconButton>
-            <IconButton
-              onClick={() => handleOpenDeleteConfirm(params.row)}
-              disabled={isRowYnab}
-              title={isRowYnab ? "Cannot delete YNAB liabilities" : "Delete"}
-              size="small"
-            >
-              <DeleteIcon
-                fontSize="small"
-                color={isRowYnab ? "disabled" : "error"}
-              />
-            </IconButton>
-          </Box>
-        );
-      },
+      headerAlign: "center",
+      renderCell: (params) => (
+        <Box>
+          <IconButton
+            size="small"
+            onClick={() => handleOpenEditModal(params.row)}
+            // title={params.row.is_ynab ? "Edit YNAB Details" : "Edit Manual Liability"}
+            title="Edit Liability"
+          >
+            <EditIcon fontSize="small" />
+          </IconButton>
+          <IconButton
+            size="small"
+            onClick={() => handleOpenDeleteConfirm(params.row)}
+            disabled={params.row.is_ynab || isDeleting}
+            title={
+              params.row.is_ynab
+                ? "Cannot delete YNAB liability"
+                : "Delete Liability"
+            }
+            color={params.row.is_ynab ? "default" : "error"}
+          >
+            <DeleteIcon fontSize="small" />
+          </IconButton>
+        </Box>
+      ),
     },
   ];
 
   return (
-    <Box sx={{ height: "calc(100vh - 160px)", width: "100%", p: 3 }}>
+    <Box sx={{ height: "calc(100vh - 64px - 48px)", width: "100%" }}>
       <Box
         sx={{
           display: "flex",
@@ -495,95 +328,87 @@ function LiabilitiesPage() {
           mb: 2,
         }}
       >
-        <Typography variant="h4">Liabilities</Typography>
-        <Box>
-          <Button
-            variant="contained"
-            onClick={handleOpenAddModal}
-            sx={{ mr: 2 }}
-          >
-            Add Manual Liability
-          </Button>
-          <Button
-            onClick={handleOpenManageTypesModal}
-            size="small"
-            startIcon={<SettingsIcon />}
-          >
-            Manage Types
-          </Button>
-        </Box>
+        <Typography variant="h5">Liabilities</Typography>
+        <Button
+          variant="contained"
+          startIcon={<AddIcon />}
+          onClick={handleOpenAddModal}
+        >
+          Add Liability
+        </Button>
       </Box>
 
-      {isLoading && (
-        <Box sx={{ display: "flex", justifyContent: "center", my: 5 }}>
-          <CircularProgress />
-        </Box>
-      )}
       {error && (
-        <Alert severity="error" sx={{ my: 2 }} onClose={() => setError(null)}>
+        <Alert severity="error" sx={{ mb: 2 }}>
           {error}
         </Alert>
       )}
 
-      {/* DataGrid instead of Table */}
-      {!isLoading && !error && (
-        <Box sx={{ height: "calc(100% - 50px)", width: "100%" }}>
+      <Paper sx={{ height: "calc(100% - 52px)", width: "100%" }}>
+        {isLoading ? (
+          <Box
+            sx={{
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+              height: "100%",
+            }}
+          >
+            <CircularProgress />
+          </Box>
+        ) : (
           <DataGrid
             rows={liabilities}
             columns={columns}
             pageSizeOptions={[10, 25, 50]}
             initialState={{
-              pagination: {
-                paginationModel: { pageSize: 25, page: 0 },
-              },
+              pagination: { paginationModel: { pageSize: 25 } },
               sorting: {
-                sortModel: [{ field: "name", sort: "asc" }],
+                sortModel: [{ field: "balance", sort: "desc" }], // Example sort
               },
             }}
-            onError={(error) => {
-              console.error("DataGrid error:", error);
+            getRowHeight={() => "auto"} // Adjust if needed for complex cells
+            sx={{
+              "& .MuiDataGrid-cell": {
+                // overflow: 'visible', // Allow content like dropdowns to overflow
+                // whiteSpace: 'normal !important', // Allow wrapping
+                lineHeight: "normal !important", // Adjust line height
+                paddingTop: "8px",
+                paddingBottom: "8px",
+              },
+              "& .MuiDataGrid-columnHeaders": {
+                borderBottom: "1px solid rgba(224, 224, 224, 1)",
+              },
+              border: 0, // Remove outer border if desired
             }}
-            disableRowSelectionOnClick
-            getRowHeight={() => "auto"}
-            getEstimatedRowHeight={() => 60}
-            localeText={{
-              noRowsLabel:
-                liabilities.length === 0
-                  ? error
-                    ? "Liabilities could not be loaded."
-                    : "No liabilities found."
-                  : "No rows",
-            }}
+            // checkboxSelection // Optional: add if needed
+            disableRowSelectionOnClick // Recommended if rows have buttons
           />
-        </Box>
-      )}
+        )}
+      </Paper>
 
-      {/* Modals */}
-      <AddLiabilityModal
-        open={isAddModalOpen}
-        onClose={handleCloseAddModal}
-        onAdd={handleAddLiability}
-        liabilityTypes={liabilityTypes}
-        banks={banks}
-      />
-
-      {liabilityToEdit && (
-        <EditLiabilityModal
-          open={isEditModalOpen}
-          onClose={handleCloseEditModal}
-          liability={liabilityToEdit}
-          onUpdate={handleUpdateLiability}
-          liabilityTypes={liabilityTypes}
-          banks={banks}
+      {/* Add Modal */}
+      {isAddModalOpen && (
+        <AddLiabilityModal
+          open={isAddModalOpen}
+          onClose={handleCloseAddModal}
+          onAdd={handleAddLiability}
+          liabilityTypes={liabilityTypes} // Pass types
+          banks={banks} // Pass banks
         />
       )}
 
-      <ManageLiabilityTypesModal
-        open={isManageTypesModalOpen}
-        onClose={handleCloseManageTypesModal}
-        liabilityTypes={liabilityTypes}
-        onUpdate={handleUpdateLiabilityTypes}
-      />
+      {/* Edit Modal */}
+      {isEditModalOpen && liabilityToEdit && (
+        <EditLiabilityModal
+          open={isEditModalOpen}
+          onClose={handleCloseEditModal}
+          onUpdate={handleUpdateLiability}
+          liability={liabilityToEdit}
+          liabilityTypes={liabilityTypes} // Pass types
+          banks={banks} // Pass banks
+        />
+      )}
 
       {/* Delete Confirmation Dialog */}
       <Dialog
@@ -592,23 +417,17 @@ function LiabilitiesPage() {
         aria-labelledby="alert-dialog-title"
         aria-describedby="alert-dialog-description"
       >
-        <DialogTitle id="alert-dialog-title">
-          Confirm Liability Deletion
-        </DialogTitle>
+        <DialogTitle id="alert-dialog-title">{"Confirm Deletion"}</DialogTitle>
         <DialogContent>
           <DialogContentText id="alert-dialog-description">
-            Are you sure you want to delete "
-            {liabilityToDelete?.name || "this liability"}"?
-            <br />
-            This action cannot be undone.
+            Are you sure you want to delete the liability "
+            {liabilityToDelete?.name || "this liability"}"? This action cannot
+            be undone.
           </DialogContentText>
+          {isDeleting && <CircularProgress size={24} sx={{ mt: 2 }} />}
         </DialogContent>
         <DialogActions>
-          <Button
-            onClick={handleCloseDeleteConfirm}
-            color="primary"
-            disabled={isDeleting}
-          >
+          <Button onClick={handleCloseDeleteConfirm} disabled={isDeleting}>
             Cancel
           </Button>
           <Button
@@ -617,7 +436,7 @@ function LiabilitiesPage() {
             autoFocus
             disabled={isDeleting}
           >
-            {isDeleting ? "Deleting..." : "Delete"}
+            Delete
           </Button>
         </DialogActions>
       </Dialog>
