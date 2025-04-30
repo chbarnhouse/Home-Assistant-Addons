@@ -554,8 +554,45 @@ class DataManager:
             asset_id = str(uuid.uuid4())
             _LOGGER.info(f"Generated new UUID for manual asset: {asset_id}")
 
-        details['id'] = asset_id # Ensure the ID is part of the details stored
-        assets[asset_id] = details
+        # Ensure essential fields exist, add entity_id handling
+        current_data = assets.get(asset_id, {}) # Get existing or empty dict
+        updated_data = {
+            **current_data, # Keep existing fields
+            **details, # Overwrite with new details
+            'id': asset_id, # Ensure ID is always present
+            # Clean up entity_id: store null if empty or not provided
+            'entity_id': details.get('entity_id') if details.get('entity_id') else None,
+            # Ensure last updated timestamp exists, default to None
+            'ynab_value_last_updated_on': current_data.get('ynab_value_last_updated_on')
+        }
+
+        # If the incoming details contain a last_updated timestamp, use it
+        # This allows the new endpoint to update it selectively
+        if 'ynab_value_last_updated_on' in details:
+            updated_data['ynab_value_last_updated_on'] = details['ynab_value_last_updated_on']
+
+        # If not a stock, ensure entity_id is null
+        # We need the type_id to determine if it's stock
+        asset_type_id = updated_data.get('type_id')
+        asset_types_list = self.get_asset_types() # Fetch the types {id, name}
+        is_stock_type = False
+        if asset_type_id and asset_types_list:
+            type_obj = next((t for t in asset_types_list if t.get('id') == asset_type_id), None)
+            if type_obj and type_obj.get('name', '').lower() == 'stocks':
+                is_stock_type = True
+
+        if not is_stock_type:
+             updated_data['entity_id'] = None
+             updated_data['symbol'] = None # Also clear symbol if not stock
+             updated_data['shares'] = None # Also clear shares if not stock
+        else:
+            # Ensure value is null/absent for stock types as it's derived
+            if 'value' in updated_data:
+                 del updated_data['value']
+            if 'current_value' in updated_data:
+                del updated_data['current_value']
+
+        assets[asset_id] = updated_data
         self._write_json(ASSETS_FILE, assets)
         _LOGGER.info(f"Saved asset details for ID: {asset_id}")
         return asset_id # Return the ID (new or existing)
@@ -1587,7 +1624,7 @@ class DataManager:
         if cards_updated:
             _LOGGER.info(f"Updating manual credit cards file after renaming payment method '{old_name_norm}' to '{new_name_norm}'")
             self._write_json(MANUAL_CREDIT_CARDS_FILE, cards)
-            self.MANUAL_CREDIT_CARDS = cards
+            self.MANUAL_CREDIT_CARDS = cards # Update cache
 
         return {"success": True, "methods": methods}
 
