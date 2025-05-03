@@ -16,3 +16,6 @@ __pycache__/
 
 # Ignore local data if mapped
 data/
+
+# Ignore the problematic api.js file
+frontend/src/api/api.js

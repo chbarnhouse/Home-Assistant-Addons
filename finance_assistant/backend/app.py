@@ -274,7 +274,9 @@ def update_settings():
         return jsonify({"error": "Invalid JSON data, expected an object"}), 400
 
     _LOGGER.info(f"Received settings update request: {data}")
-    allowed_settings = ["use_calculated_asset_value"] # Define keys allowed to be updated
+    # --- FIX: Add include_ynab_emoji to allowed settings ---
+    allowed_settings = ["use_calculated_asset_value", "include_ynab_emoji"]
+    # --- END FIX ---
     update_results = {}
     errors = {}
     success = True
@@ -287,6 +289,12 @@ def update_settings():
                     errors[key] = "Must be a boolean (true/false)"
                     success = False
                     continue
+                # --- FIX: Add validation for include_ynab_emoji ---
+                if key == "include_ynab_emoji" and not isinstance(value, bool):
+                    errors[key] = "Must be a boolean (true/false)"
+                    success = False
+                    continue
+                # --- END FIX ---
 
                 # Update the setting via DataManager
                 if data_manager.update_setting(key, value):

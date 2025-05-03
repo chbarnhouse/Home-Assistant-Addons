@@ -200,67 +200,51 @@ function SettingsPage() {
   const handleSwitchChange = (event) => {
     const { name, checked } = event.target;
     console.log(`handleSwitchChange: name=${name}, checked=${checked}`);
-    setConfig((prevConfig) => ({
-      ...prevConfig,
-      [name]: checked,
-    }));
+    setConfig((prevConfig) => {
+      console.log("handleSwitchChange: Updating local state BEFORE save call.");
+      return {
+        ...prevConfig,
+        [name]: checked,
+      };
+    });
     handleSaveSetting(name, checked);
   };
 
   const handleSaveSetting = async (settingKey, settingValue) => {
-    console.log(`Saving setting: ${settingKey} = ${settingValue}`);
-    setStatusMessage(`Saving ${settingKey.replace(/_/g, " ")}...`);
+    console.log(
+      `handleSaveSetting: Attempting to save ${settingKey}=${settingValue}`
+    );
+    setStatusMessage("Saving setting...");
     setErrorMessage("");
     try {
-      const response = await callApi("/config/update", {
-        method: "PATCH",
-        body: JSON.stringify({ [settingKey]: settingValue }),
+      const payload = { [settingKey]: settingValue };
+      const response = await callApi("/settings", {
+        method: "PUT",
+        body: JSON.stringify(payload),
       });
-      console.log("Save response:", response);
-      if (response) {
-        notify(
-          `Successfully updated ${settingKey.replace(/_/g, " ")}.`,
-          "success"
-        );
-        setStatusMessage(
-          `Successfully updated ${settingKey.replace(/_/g, " ")}.`
-        );
-      } else {
-        throw new Error("No response data from server");
-      }
-    } catch (error) {
-      console.error(`Error saving setting ${settingKey}:`, error);
-      const errorMsg =
-        error.response?.data?.error ||
-        error.message ||
-        "Failed to save setting.";
-      setErrorMessage(
-        `Error saving ${settingKey.replace(/_/g, " ")}: ${errorMsg}`
+      console.log("handleSaveSetting: API call successful", response);
+      setStatusMessage("Setting saved successfully.");
+      setTimeout(() => setStatusMessage(""), 3000);
+    } catch (err) {
+      console.error("Setting save error:", err);
+      console.error(
+        "handleSaveSetting: API call failed. Error response:",
+        err.response
       );
-      notify(`Failed to update ${settingKey.replace(/_/g, " ")}.`, "error");
-      setStatusMessage("");
-    }
-  };
-
-  const handleSaveConfig = async () => {
-    setStatusMessage("Saving YNAB configuration...");
-    setErrorMessage("");
-    try {
-      await callApi("/config", "PATCH", {
-        ynab_api_key: config.ynab_api_key,
-        ynab_budget_id: config.ynab_budget_id,
-      });
-      notify("YNAB configuration saved successfully.", "success");
-      setStatusMessage("YNAB configuration saved successfully.");
-    } catch (error) {
-      console.error("Error saving configuration:", error);
       const errorMsg =
-        error.response?.data?.error ||
-        error.message ||
-        "Failed to save configuration.";
-      setErrorMessage(`Error saving configuration: ${errorMsg}`);
-      notify("Failed to save YNAB configuration.", "error");
+        err.response?.data?.error || err.message || "Failed to save setting.";
+      setErrorMessage(`Error saving setting ${settingKey}: ${errorMsg}`);
       setStatusMessage("");
+      setConfig((prevConfig) => {
+        console.log(
+          `handleSaveSetting: Reverting state for ${settingKey} due to error.`
+        );
+        return {
+          ...prevConfig,
+          [settingKey]: !settingValue,
+        };
+      });
+      notify(`Failed to save setting: ${settingKey}`, "error");
     }
   };
 
@@ -374,35 +358,24 @@ function SettingsPage() {
             <TextField
               label="YNAB API Key"
               name="ynab_api_key"
-              type="password"
-              value={config.ynab_api_key}
-              onChange={handleInputChange}
+              value={config.ynab_api_key ? "********" : "Not Set"}
               fullWidth
               margin="normal"
-              helperText="Enter your YNAB API key."
-              disabled={isLoading}
+              InputProps={{
+                readOnly: true,
+              }}
+              disabled
             />
             <TextField
               label="YNAB Budget ID"
               name="ynab_budget_id"
-              value={config.ynab_budget_id}
-              onChange={handleInputChange}
+              value={config.ynab_budget_id || "Not Set"}
               fullWidth
               margin="normal"
-              helperText="Enter the ID of the YNAB budget you want to use."
-              disabled={isLoading}
-            />
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={config.include_ynab_emoji || false}
-                  onChange={handleSwitchChange}
-                  name="include_ynab_emoji"
-                  disabled={isLoading}
-                />
-              }
-              label="Include YNAB Emoji in Home Assistant Entity Name"
-              sx={{ mt: 1, mb: 1 }}
+              InputProps={{
+                readOnly: true,
+              }}
+              disabled
             />
           </Paper>
 
@@ -429,6 +402,25 @@ function SettingsPage() {
               This setting takes effect on the next Home Assistant sensor update
               after saving.
             </Typography>
+
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={config.include_ynab_emoji}
+                  onChange={handleSwitchChange}
+                  name="include_ynab_emoji"
+                />
+              }
+              label="Include YNAB Emoji in HA Entity Names"
+              sx={{ mb: 1, display: "block" }}
+            />
+            <Typography variant="body2" color="textSecondary" sx={{ mb: 2 }}>
+              If enabled, entity names in Home Assistant will include the emoji
+              from the YNAB account name (e.g., "💸 Checking"). If disabled, the
+              emoji will be removed (e.g., "Checking"). Changes take effect on the
+              next Home Assistant sensor update after saving.
+            </Typography>
+
             {statusMessage && (
               <Typography
                 variant="caption"
