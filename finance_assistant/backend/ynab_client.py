@@ -2,6 +2,7 @@ import ynab_api
 from ynab_api.api import accounts_api, budgets_api, transactions_api, user_api, scheduled_transactions_api, categories_api, payees_api
 from ynab_api.model.save_transaction import SaveTransaction
 from ynab_api.model.update_transaction import UpdateTransaction
+from ynab_api.model.save_transactions_wrapper import SaveTransactionsWrapper
 import logging
 from datetime import datetime
 import json
@@ -179,7 +180,7 @@ class YNABClient:
             _LOGGER.error(f"Exception when calling TransactionsApi->get_transactions_by_account: {e}")
             return None
 
-    def create_transaction(self, account_id, date, amount, payee_id=None, payee_name=None, memo=None):
+    def create_transaction(self, account_id, date, amount, payee_id=None, payee_name=None, memo=None, cleared=None, approved=None):
         if not self.is_configured(): return None
         transactions_api_instance = transactions_api.TransactionsApi(self._api_client)
         transaction = SaveTransaction(
@@ -188,10 +189,12 @@ class YNABClient:
             amount=amount, # Amount in milliunits (amount * 1000)
             payee_id=payee_id,
             payee_name=payee_name, # Max 50 chars
-            memo=memo # Max 200 chars
-            # Add other fields like category_id, cleared, approved, flag_color if needed
+            memo=memo, # Max 200 chars
+            cleared=cleared, # Pass cleared status
+            approved=approved # Pass approved status
+            # Add other fields like category_id, flag_color if needed
         )
-        body = ynab_api.SaveTransactionsWrapper(transaction=transaction) # SaveTransactionsWrapper | The transaction or transactions to create. Single transaction specified as {"transaction": transaction} or multiple within {"transactions": [transaction_1, transaction_2, ...]}
+        body = SaveTransactionsWrapper(transaction=transaction)
         try:
             api_response = transactions_api_instance.create_transaction(self.budget_id, body)
             return api_response.data

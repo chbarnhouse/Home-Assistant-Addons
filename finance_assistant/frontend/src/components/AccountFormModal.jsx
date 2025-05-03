@@ -125,11 +125,39 @@ function AddEditAccountModal({
       const remainingIndex = rules.findIndex((r) => r?.id === "remaining");
 
       if (remainingIndex !== -1) {
+        // --- FIX: Ensure existing remaining rule has correct type and name ---
+        const remainingRule = rules[remainingIndex];
+        let ruleNeedsUpdate = false;
+        if (!remainingRule.type || remainingRule.type !== "remaining") {
+          console.warn(
+            "Correcting missing/invalid type for existing remaining rule."
+          );
+          remainingRule.type = "remaining";
+          ruleNeedsUpdate = true;
+        }
+        if (!remainingRule.name) {
+          // Also ensure name exists
+          console.warn("Correcting missing name for existing remaining rule.");
+          remainingRule.name = "Remaining";
+          ruleNeedsUpdate = true;
+        }
+        // Ensure value is null for remaining rule
+        if (remainingRule.value !== null) {
+          console.warn(
+            "Correcting non-null value for existing remaining rule."
+          );
+          remainingRule.value = null;
+          ruleNeedsUpdate = true;
+        }
+        // --- END FIX ---
+
         // If found, ensure it's at the end
-        if (remainingIndex < rules.length - 1) {
-          console.log("Moving existing remaining rule to the end.");
-          const remainingRule = rules.splice(remainingIndex, 1)[0];
-          rules.push(remainingRule);
+        if (remainingIndex < rules.length - 1 || ruleNeedsUpdate) {
+          console.log("Moving/Updating existing remaining rule to the end.");
+          // If the rule needed updates, we splice and push the corrected one
+          // If it just needed moving, we also splice and push
+          rules.splice(remainingIndex, 1); // Remove from original position
+          rules.push(remainingRule); // Add the (potentially corrected) rule to the end
         }
       } else {
         // If not found, add a default one based on account type
@@ -141,6 +169,7 @@ function AddEditAccountModal({
         rules.push({
           id: "remaining",
           type: "remaining",
+          name: "Remaining",
           value: null,
           status: defaultStatus, // Use calculated default status
         });
@@ -516,12 +545,30 @@ function AddEditAccountModal({
     console.log("formData.bank:", formData.bank);
     // <<< END LOGGING >>>
 
+    // --- FIX: Look up account_type_id --- #
+    const selectedAccountTypeObject = (initialAccountTypes || []).find(
+      (type) => type.name === formData.accountType
+    );
+    const accountTypeIdToSend = selectedAccountTypeObject
+      ? selectedAccountTypeObject.id
+      : null;
+    if (!accountTypeIdToSend && formData.accountType) {
+      // This indicates an issue - a type name was selected but no ID found.
+      // Maybe the initialAccountTypes list was incomplete or malformed.
+      _LOGGER.error(
+        `Could not find ID for selected account type name: ${formData.accountType}`
+      );
+      // Optionally set an error state or notify the user
+    }
+    // --- END FIX --- #
+
     // Make sure we send both account_type and type fields to ensure consistency
     // This will help both the backend and frontend use the same fields
     const payload = {
       bank: formData.bank || null,
       include_bank_in_name: formData.includeBankInName,
-      account_type: formData.accountType,
+      account_type: formData.accountType, // Keep the name for display consistency if needed
+      account_type_id: accountTypeIdToSend, // --- FIX: Send the ID --- #
       type: formData.accountType, // Also include as type for consistency
       last_4_digits: formData.last_4_digits || null,
       notes: formData.notes || null,
@@ -599,7 +646,12 @@ function AddEditAccountModal({
   };
 
   const calculateEstimatedAllocations = useCallback(() => {
-    const totalBalance = account?.balance || 0;
+    // --- FIX: Use cleared_balance for calculation --- #
+    const totalBalance = account?.cleared_balance ?? account?.balance ?? 0;
+    _LOGGER.debug(
+      `[calculateEstimatedAllocations] Using totalBalance: ${totalBalance} (from cleared: ${account?.cleared_balance}, fallback: ${account?.balance})`
+    );
+    // --- END FIX --- #
     let liquid = 0;
     let frozen = 0;
     let deepFreeze = 0;
@@ -627,7 +679,7 @@ function AddEditAccountModal({
         const percentage = rule.value || 0;
         if (percentage > 0 && percentage <= 100) {
           const amount = Math.min(
-            Math.floor(balanceAfterFixed * (percentage / 100)),
+            Math.round(balanceAfterFixed * (percentage / 100)),
             remaining
           );
           if (amount > 0) {
@@ -652,7 +704,7 @@ function AddEditAccountModal({
     }
 
     return { liquid, frozen, deepFreeze, remaining: Math.max(0, remaining) }; // Ensure remaining isn't negative visually
-  }, [account?.balance, formData.allocation_rules]);
+  }, [account?.cleared_balance, account?.balance, formData.allocation_rules]);
 
   const estimatedAllocations = calculateEstimatedAllocations();
   // ---------------------------------------
@@ -887,7 +939,11 @@ function AddEditAccountModal({
                   color="text.secondary"
                   sx={{ mb: 1 }}
                 >
-                  Current Balance: {formatCurrencyLocal(account?.balance)}
+                  {/* FIX: Use account.cleared_balance if available */}
+                  Current Balance:{" "}
+                  {formatCurrencyLocal(
+                    account?.cleared_balance ?? account?.balance
+                  )}
                 </Typography>
                 {/* Display Estimated Allocations */}
                 <Box
@@ -917,7 +973,10 @@ function AddEditAccountModal({
                   </Alert>
                 )}
                 <List dense disablePadding>
-                  {(formData.allocation_rules || []).map((rule) => (
+                  {(formData.allocation_rules || []).map((rule, index) => (
+                    // --- REVERT LOGGING AGAIN ---
+                    // console.log(`Rendering Rule ${index}:`, JSON.stringify(rule));
+                    // --- END REVERT LOGGING ---
                     <ListItem
                       key={rule.id}
                       disableGutters
@@ -1073,6 +1132,13 @@ function AddEditAccountModal({
                             flexWrap: "wrap", // Allow wrapping
                           }}
                         >
+                          {/* --- REMOVE DEBUG --- */}
+                          {/* {rule.id === 'remaining' && (
+                            <Typography variant="caption" component="pre" sx={{ width: '100%', whiteSpace: 'pre-wrap', wordBreak: 'break-all', mb: 1, border: '1px dashed red' }}>
+                              DEBUG Remaining Rule: {JSON.stringify(rule)}
+                            </Typography>
+                          )} */}
+                          {/* --- END REMOVE DEBUG --- */}
                           <Box sx={{ flexGrow: 1, mr: 1 }}>
                             <Typography variant="body1" component="span">
                               {rule.type === "remaining"

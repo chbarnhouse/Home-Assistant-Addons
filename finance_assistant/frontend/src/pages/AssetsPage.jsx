@@ -62,6 +62,10 @@ function AssetsPage() {
       // Ensure all assets have a unique ID for DataGrid, safely handle possible undefined values
       const assetsArray = Array.isArray(data.assets) ? data.assets : [];
       console.log("Raw assets data:", assetsArray);
+      const currentAssetTypes = Array.isArray(data.asset_types)
+        ? data.asset_types
+        : []; // Use fetched data directly
+      const currentBanks = Array.isArray(data.banks) ? data.banks : []; // Use fetched data directly
 
       const processedAssets = assetsArray.map((asset, index) => {
         // Ensure asset is an object
@@ -72,12 +76,10 @@ function AssetsPage() {
         // Get name
         const name = assetObj.name || `Asset ${index + 1}`;
 
-        // Find type name from ID
-        const typeObj = assetTypes.find((t) => t && t.id === assetObj.type_id);
-        const typeName = typeObj ? typeObj.name : assetObj.type || "Unknown";
-
-        // Find bank name from ID
-        const bankObj = banks.find((b) => b && b.id === assetObj.bank_id);
+        // Find bank name from ID using the fetched data
+        const bankObj = currentBanks.find(
+          (b) => b && b.id === assetObj.bank_id
+        );
         const bankName = bankObj ? bankObj.name : assetObj.bank || "N/A";
 
         // YNAB assets store value in milliunits, manual assets use 'value' directly
@@ -107,26 +109,30 @@ function AssetsPage() {
           assetObj.updated_at ||
           new Date().toISOString();
 
+        // --- Add logic to extract shares and entity_id --- NEW ---
+        const shares = assetObj.shares || null;
+        const entityId = assetObj.entity_id || null;
+        // --- End logic --- NEW ---
+
         // Spread original object FIRST, then override specific fields
         const processedAsset = {
-          ...assetObj, // Spread first
-          id: assetObj.id || `asset-${Date.now()}-${index}`, // Ensure ID
-          name: name, // Ensure name
-          type: typeName, // Use calculated type name
-          bank: bankName, // Use calculated bank name
-          value: currentValueInDollars, // Use calculated dollar value
-          value_updated_at: lastUpdated, // Ensure consistent date field
+          ...assetObj, // Keep all original fields like type_id and ynab_type
+          id: assetObj.id || `asset-${Date.now()}-${index}`,
+          name: name,
+          bank: bankName,
+          value: currentValueInDollars,
+          value_updated_at: lastUpdated,
           is_ynab: isYnab,
-          // Other fields from ...assetObj are preserved
+          shares: shares, // Add shares to processed data
+          entity_id: entityId, // Add entity_id to processed data
         };
-
-        console.log(`Processed asset #${index}:`, processedAsset);
+        console.log(`Processed asset #${index} result:`, processedAsset);
         return processedAsset;
       });
 
       setAssets(processedAssets);
-      setBanks(Array.isArray(data.banks) ? data.banks : []);
-      setAssetTypes(Array.isArray(data.asset_types) ? data.asset_types : []);
+      setBanks(currentBanks); // Update state after processing
+      setAssetTypes(currentAssetTypes); // Update state after processing
       setError(null);
     } catch (err) {
       console.error("Error fetching assets:", err);
@@ -173,14 +179,25 @@ function AssetsPage() {
   };
 
   const handleUpdateAsset = (updatedAsset) => {
+    // Re-derive the type name from the type_id provided by the backend
+    const typeObj = assetTypes.find((t) => t && t.id === updatedAsset.type_id);
+    const typeName = typeObj ? typeObj.name : updatedAsset.type || "Unknown";
+    const bankObj = banks.find((b) => b && b.id === updatedAsset.bank_id);
+    const bankName = bankObj ? bankObj.name : updatedAsset.bank || "N/A";
+
+    const processedUpdate = {
+      ...updatedAsset,
+      bank: bankName, // Use the derived bank name
+    };
+
     setAssets((prevAssets) =>
-      prevAssets.map((asset) =>
-        asset.id === updatedAsset.id ? updatedAsset : asset
+      prevAssets.map(
+        (asset) => (asset.id === processedUpdate.id ? processedUpdate : asset) // Use the processed object
       )
     );
     setError(null);
     notify("Asset updated successfully!", "success");
-    fetchAssets();
+    // fetchAssets(); // Keep removed
   };
 
   // Helper to format date/time
@@ -258,8 +275,15 @@ function AssetsPage() {
       minWidth: 150,
       flex: 1,
       renderCell: (params) => {
-        if (!params || !params.row) return "N/A";
-        return params.row.type || "N/A";
+        if (!params.row) return "N/A"; // Safety check
+
+        // Find the managed asset type object using the asset's type_id
+        const managedType = assetTypes.find(
+          (type) => type && type.id === params.row.type_id
+        );
+
+        // Display the managed name if found, otherwise fall back to the raw type from the row, or N/A
+        return managedType ? managedType.name : params.row.type || "N/A";
       },
     },
     {
@@ -275,20 +299,27 @@ function AssetsPage() {
     {
       field: "value",
       headerName: "Current Value",
-      minWidth: 150,
-      flex: 1,
+      type: "number",
+      width: 150,
+      valueGetter: (params) => params?.row?.value ?? null,
+      renderCell: (params) => formatCurrency(params?.row?.value),
+    },
+    {
+      field: "shares", // NEW Column
+      headerName: "Shares",
+      type: "number",
+      width: 100,
+      valueGetter: (params) => params?.row?.shares ?? null,
+      renderCell: (params) => params?.row?.shares ?? "N/A",
       align: "right",
       headerAlign: "right",
-      renderCell: (params) => {
-        if (
-          !params ||
-          !params.row ||
-          params.row.value == null ||
-          params.row.value === 0
-        )
-          return "N/A";
-        return formatCurrency(params.row.value);
-      },
+    },
+    {
+      field: "entity_id", // NEW Column
+      headerName: "Linked Entity ID",
+      width: 250,
+      valueGetter: (params) => params?.row?.entity_id ?? "N/A",
+      renderCell: (params) => params?.row?.entity_id ?? "N/A",
     },
     {
       field: "value_updated_at",

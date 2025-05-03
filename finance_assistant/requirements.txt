@@ -10,3 +10,11 @@ python-dotenv
 gunicorn
 uvicorn~=0.29.0
 # a2wsgi~=1.7.0 - Replaced with Werkzeug adapter
+
+# Optional: Logging configuration if needed externally
+# logging
+
+# Optional: For UUID generation if not built-in enough
+# uuid
+
+# Other dependencies as needed...

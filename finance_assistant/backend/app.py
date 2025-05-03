@@ -12,12 +12,19 @@ from functools import wraps
 import time
 from urllib.parse import urljoin, urlparse
 import importlib.metadata
+from ynab_api.model.save_transaction_wrapper import SaveTransactionWrapper
+from ynab_api.exceptions import ApiException
+from flask_cors import CORS
+from dotenv import load_dotenv
+from ynab_api.model.save_account import SaveAccount
+from ynab_api.model.save_transaction import SaveTransaction
+from ynab_api.model.update_transaction import UpdateTransaction
 
 from .config import config
 from .ynab_client import YNABClient # Correct import: class YNABClient
 from .data_manager import (
-    DataManager,
-    PAYMENT_METHODS_FILE # Re-add this import
+    DataManager
+    # PAYMENT_METHODS_FILE # Re-add this import # REMOVE THIS LINE
     # MANUAL_ACCOUNTS_FILE, # Removed
     # MANUAL_ASSETS_FILE, # Removed
     # MANUAL_LIABILITIES_FILE, # Removed
@@ -98,35 +105,29 @@ def supervisor_token_required(f):
     return decorated_function
 
 # --- API Blueprint ---
-# REMOVED url_prefix='/api' to simplify routing with ingress
-api_bp = Blueprint('api', __name__) # No url_prefix
+# REMOVED url_prefix='/api' to simplify routing with ingress -- Restored prefix below
+api_bp = Blueprint('api', __name__) # No url_prefix Initially
 
 # IMPORTANT: Create a secondary registration of the same blueprint with the ingress path as prefix - This might be less critical now
-@app.before_request
-def handle_ingress_request():
-    """
-    Detect and redirect ingress-prefixed API calls to their proper handlers
-    """
-    # Log all incoming requests HERE
-    _LOGGER.info(f"<<< Before Request >>> Path: {request.path}, Ingress Header: {request.headers.get('X-Ingress-Path')}, Remote: {request.remote_addr}")
+# @app.before_request # REMOVED this handler as it wasn't effective
+# def handle_ingress_request():
+#     pass # Keep empty or remove entirely
 
-    ingress_path = request.headers.get('X-Ingress-Path', '')
-    if ingress_path and request.path.startswith(ingress_path):
-        # If this is a request to an API endpoint via the ingress path
-        # e.g. /api/hassio_ingress/123/all_data should go to /api/all_data
-        if not ingress_path.endswith('/'):
-            ingress_path += '/'
-        # Check if this is an API request after the ingress path
-        path_after_ingress = request.path[len(ingress_path):]
-        _LOGGER.debug(f"Request path after ingress: '{path_after_ingress}'")
-        # No need to rewrite since we're registering the blueprint at both paths
+# --- Explicit Ingress Route for /api/all_data ---
+@app.route('/api/hassio_ingress/<path:addon_id>/api/all_data', methods=['GET'])
+@supervisor_token_required # Ensure auth is checked
+def direct_get_all_data_ingress(addon_id):
+    """Handles GET requests for all_data coming directly via ingress."""
+    _LOGGER.info(f"--- Handling GET /all_data directly via ingress route for addon_id: {addon_id} ---")
+    # Simply call the existing blueprint function
+    return get_all_data()
+# --- End Explicit Ingress Route ---
 
 # --- Simple Ping Test Route (on Blueprint) ---
 @api_bp.route('/ping')
 # @supervisor_token_required # REMOVED - Ping should not require auth
 def ping():
-    _LOGGER.info("--- PING ENDPOINT HIT --- (via /api/ping)") # Added specific logging
-    _LOGGER.info("Received request for /ping (no prefix)") # Updated log message
+    _LOGGER.info("--- PING ENDPOINT HIT --- (via /api/ping)")
     return jsonify({"message": "pong"})
 
 # Testing route at the root level - no authentication needed
@@ -165,18 +166,157 @@ def debug_endpoint():
     _LOGGER.info(f"Debug endpoint accessed from {request.remote_addr}")
     return jsonify(debug_info)
 
-# Example route to test configuration loading (on Blueprint)
-@api_bp.route('/config')
+# Define PATCH handler FIRST - ** CHANGED ROUTE **
+@api_bp.route('/config/update', methods=['PATCH']) # <<< Changed route to /config/update
+@supervisor_token_required # Restore auth decorator
+def update_config():
+    """Update specific configuration settings (toggles only) via DataManager."""
+    # <<< REMOVED DEBUG LOGGING >>>
+    # _LOGGER.info(f"!!!!!!!! ENTERING update_config - METHOD: {request.method} !!!!!!!!")
+    # <<< END DEBUG LOGGING >>>
+    try:
+        # _LOGGER.info("--- PATCH CONFIG START (DB Save - Simple Response) ---") # Removed old log
+        _LOGGER.info("--- UPDATE CONFIG START --- ") # New simpler log
+        data = request.get_json()
+        if not data:
+            _LOGGER.warning("PATCH /config/update called with no JSON data.")
+            return jsonify({"error": "No data provided"}), 400
+
+        _LOGGER.info(f"Received config update data: {data}")
+
+        # --- ACTUAL LOGIC TO SAVE SETTINGS --- #
+        success_flags = []
+        for key, value in data.items():
+            # Only allow updating specific known toggle keys
+            if key in ['include_ynab_emoji', 'use_calculated_asset_value']:
+                 _LOGGER.info(f"Attempting to save setting: {key} = {value}")
+                 try:
+                     setting_saved = data_manager.update_setting(key, value)
+                     success_flags.append(setting_saved)
+                     if setting_saved:
+                         _LOGGER.info(f"Successfully saved setting: {key} = {value}")
+                     else:
+                         _LOGGER.error(f"Failed to save setting via DataManager: {key}")
+                 except Exception as e:
+                     _LOGGER.error(f"Error saving setting {key}: {e}", exc_info=True)
+                     success_flags.append(False)
+            else:
+                 _LOGGER.warning(f"Ignoring unknown key in update request: {key}")
+
+        overall_success = all(success_flags)
+        _LOGGER.info(f"--- UPDATE CONFIG END (Success: {overall_success}) ---")
+        if overall_success:
+            return jsonify({"success": True, "message": "Settings updated successfully."}), 200
+        else:
+             return jsonify({"error": "Failed to update one or more settings"}), 500
+        # --- END ACTUAL LOGIC --- #
+
+    except Exception as e:
+        _LOGGER.error(f"Error in PATCH /config/update endpoint: {e}", exc_info=True)
+        _LOGGER.info("--- UPDATE CONFIG ERROR END --- ")
+        return jsonify({"error": "Failed to update configuration"}), 500
+
+# Define GET handler SECOND
+@api_bp.route('/config', methods=['GET']) # <<< Keep GET on /config
 @supervisor_token_required
 def get_config():
-    return jsonify({
-        "ynab_api_key_loaded": bool(config.ynab_api_key),
-        "ynab_budget_id_loaded": bool(config.ynab_budget_id),
-        "all_options": config.get_all_options() # Return all options for debugging
-    })
+    # <<< REMOVED DEBUG LOGGING >>>
+    # _LOGGER.info(f"!!!!!!!! ENTERING get_config - METHOD: {request.method} !!!!!!!!")
+    # <<< END DEBUG LOGGING >>>
+    try:
+        _LOGGER.info("--- GET CONFIG START ---")
+        # 1. Read YNAB keys from options.json (Supervisor config)
+        options_path = "/data/options.json"
+        options = {}
+        if os.path.exists(options_path):
+            try:
+                with open(options_path, 'r') as f:
+                    options = json.load(f)
+            except Exception as read_err:
+                 _LOGGER.error(f"Error reading {options_path}: {read_err}", exc_info=True)
+        else:
+            _LOGGER.warning(f"{options_path} does not exist.")
+
+        ynab_api_key = options.get('ynab_api_key', '')
+        ynab_budget_id = options.get('ynab_budget_id', '')
+
+        # 2. Read toggle settings from DataManager (DB)
+        include_ynab_emoji = data_manager.get_setting('include_ynab_emoji', False)
+        use_calculated_asset_value = data_manager.get_setting('use_calculated_asset_value', False)
+        _LOGGER.debug(f"Read from DB: include_ynab_emoji={include_ynab_emoji}, use_calculated_asset_value={use_calculated_asset_value}")
+
+        # 3. Combine and return
+        config_data = {
+            'ynab_api_key': ynab_api_key,
+            'ynab_budget_id': ynab_budget_id,
+            'include_ynab_emoji': include_ynab_emoji,
+            'use_calculated_asset_value': use_calculated_asset_value,
+        }
+        _LOGGER.info(f"Returning combined config data: {config_data}")
+        _LOGGER.info("--- GET CONFIG END ---")
+        return jsonify(config_data)
+    except Exception as e:
+        _LOGGER.error(f"Error in get_config endpoint: {e}", exc_info=True)
+        _LOGGER.info("--- GET CONFIG ERROR END ---")
+        return jsonify({"error": "Failed to retrieve configuration"}), 500
+
+# --- END Add PATCH method ---
+
+# --- NEW Settings Save Endpoint ---
+@api_bp.route('/settings', methods=['PUT'])
+@supervisor_token_required
+def update_settings():
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 400
+
+    data = request.get_json()
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid JSON data, expected an object"}), 400
+
+    _LOGGER.info(f"Received settings update request: {data}")
+    allowed_settings = ["use_calculated_asset_value"] # Define keys allowed to be updated
+    update_results = {}
+    errors = {}
+    success = True
+
+    for key, value in data.items():
+        if key in allowed_settings:
+            try:
+                # Basic validation (specific validation could be added per key)
+                if key == "use_calculated_asset_value" and not isinstance(value, bool):
+                    errors[key] = "Must be a boolean (true/false)"
+                    success = False
+                    continue
+
+                # Update the setting via DataManager
+                if data_manager.update_setting(key, value):
+                    update_results[key] = "Updated"
+                    _LOGGER.info(f"Updated setting '{key}' to '{value}'")
+                else:
+                    errors[key] = "Failed to save setting"
+                    success = False
+                    _LOGGER.error(f"DataManager failed to update setting '{key}'")
+            except Exception as e:
+                _LOGGER.exception(f"Error updating setting '{key}': {e}")
+                errors[key] = f"Internal server error: {e}"
+                success = False
+        else:
+            _LOGGER.warning(f"Attempted to update disallowed setting key: {key}")
+            # Optionally include in errors or just ignore
+            # errors[key] = "Setting key not allowed"
+            # success = False
+
+    if success:
+        return jsonify({"success": True, "details": update_results}), 200
+    else:
+        return jsonify({"error": "Failed to update one or more settings", "details": errors}), 400
+# --- END NEW Settings Save Endpoint ---
 
 # Helper function to apply allocation rules
 def calculate_allocations(total_balance_milliunits, rules):
+    # --- Removed Verbose Logging --- #
+    # _LOGGER.debug(f"[calculate_allocations] START - Total Balance: {total_balance_milliunits}")
+    # --- END LOGGING --- #
     liquid = 0
     frozen = 0
     deep_freeze = 0
@@ -194,8 +334,10 @@ def calculate_allocations(total_balance_milliunits, rules):
             continue
         if rule.get('type') == 'fixed':
             try:
-                value_milliunits = int(float(rule.get('value', 0)) * 1000)
+                # --- FIX: Use round() instead of int() --- #
+                value_milliunits = round(float(rule.get('value', 0)) * 1000)
                 amount_to_allocate = min(value_milliunits, remaining_balance)
+                # --- END FIX --- #
                 status = rule.get('status')
                 if amount_to_allocate > 0:
                     if status == 'Liquid': liquid += amount_to_allocate
@@ -206,6 +348,9 @@ def calculate_allocations(total_balance_milliunits, rules):
                     processed_rule_ids.add(rule_id)
             except (ValueError, TypeError) as e:
                 _LOGGER.error(f"Error processing fixed rule {rule_id}: {e}")
+    # --- DETAILED LOGGING --- #
+    # _LOGGER.debug(f"[calculate_allocations] After Fixed Rules - Remaining: {remaining_balance}, L/F/DF: {liquid}/{frozen}/{deep_freeze}")
+    # --- END LOGGING --- #
 
     # 2. Process Percentage Rules (on remaining balance after fixed)
     balance_after_fixed = remaining_balance
@@ -215,11 +360,16 @@ def calculate_allocations(total_balance_milliunits, rules):
             continue
         if rule.get('type') == 'percentage':
             try:
+                # --- FIX: Use round() instead of int() --- #
                 percentage = float(rule.get('value', 0))
                 if 0 < percentage <= 100:
-                    amount_to_allocate = int(balance_after_fixed * (percentage / 100))
-                    amount_to_allocate = min(amount_to_allocate, remaining_balance)
+                    amount_to_allocate = round(balance_after_fixed * (percentage / 100))
+                    # --- END FIX --- #
+                    amount_to_allocate = min(amount_to_allocate, remaining_balance) # Cap allocation
                     status = rule.get('status')
+                    # --- DETAILED LOGGING --- #
+                    # _LOGGER.debug(f"[calculate_allocations] Percent Rule {rule_id}: {percentage}% of {balance_after_fixed} = {amount_to_allocate}, Status: {status}")
+                    # --- END LOGGING --- #
                     if amount_to_allocate > 0:
                         if status == 'Liquid': liquid += amount_to_allocate
                         elif status == 'Frozen': frozen += amount_to_allocate
@@ -231,6 +381,9 @@ def calculate_allocations(total_balance_milliunits, rules):
                     _LOGGER.warning(f"Invalid percentage value {percentage} in rule {rule_id}")
             except (ValueError, TypeError) as e:
                 _LOGGER.error(f"Error processing percentage rule {rule_id}: {e}")
+    # --- DETAILED LOGGING --- #
+    # _LOGGER.debug(f"[calculate_allocations] After Percent Rules - Remaining: {remaining_balance}, L/F/DF: {liquid}/{frozen}/{deep_freeze}")
+    # --- END LOGGING --- #
 
     # 3. Apply the final 'remaining' rule
     remaining_rule = next((rule for rule in rules if rule.get('id') == 'remaining'), None)
@@ -245,6 +398,9 @@ def calculate_allocations(total_balance_milliunits, rules):
         _LOGGER.warning("'Remaining' rule missing, defaulting leftover balance to Liquid.")
         liquid += remaining_balance
 
+    # --- DETAILED LOGGING --- #
+    # _LOGGER.debug(f"[calculate_allocations] FINAL - L/F/DF: {liquid}/{frozen}/{deep_freeze}")
+    # --- END LOGGING --- #
     return {'liquid_milliunits': liquid, 'frozen_milliunits': frozen, 'deep_freeze_milliunits': deep_freeze}
 
 # --- Consolidated Data Endpoint for HA Integration (on Blueprint) ---
@@ -279,7 +435,6 @@ def get_all_data():
         manual_accounts_data = data_manager.get_manual_accounts()
         manual_assets_dict = data_manager.get_manual_assets()
         manual_liabilities_data = data_manager.get_manual_liabilities()
-        manual_only_liabilities_dict = data_manager.get_manual_only_liabilities()
         manual_credit_cards_data = data_manager.get_manual_credit_cards()
 
         # --- Process Accounts, Assets, Liabilities, Credit Cards ---
@@ -302,7 +457,9 @@ def get_all_data():
                 # Pass the YNAB account type to get_manual_account_details
                 manual_details = data_manager.get_manual_account_details(ynab_id, account_type=acc_type)
                 allocation_rules = manual_details.get('allocation_rules', []) # Rules now have correct default status
-                allocations = calculate_allocations(acc_dict.get('balance', 0), allocation_rules)
+                # --- FIX: Use cleared_balance for allocation calculation --- #
+                allocations = calculate_allocations(acc_dict.get('cleared_balance', 0), allocation_rules)
+                # --- END FIX --- #
 
                 # Determine final account type (prioritize manual, fallback to Title Case YNAB type)
                 final_account_type = manual_details.get('account_type', acc_type.title() if acc_type else "Unknown")
@@ -323,13 +480,38 @@ def get_all_data():
 
             # Process Assets
             elif acc_type in potential_ynab_asset_types:
-                manual_details = manual_assets_dict.get(ynab_id, {})
+                # Fetch manual details individually inside the loop for freshness
+                manual_details = data_manager.get_manual_asset_details(ynab_id) or {}
+                _LOGGER.debug(f"Asset Processing ({ynab_id}): Fetched manual_details: {manual_details}") # <-- ADD LOGGING
+
+                # --- Explicitly look up type name from ID --- NEW
+                final_asset_type_name = None
+                asset_type_id = manual_details.get('asset_type_id')
+                if asset_type_id:
+                    all_asset_types = data_manager.get_asset_types()
+                    type_obj = next((t for t in all_asset_types if t.get('id') == asset_type_id), None)
+                    if type_obj:
+                        final_asset_type_name = type_obj.get('name')
+                # Fallback to manual details name or YNAB type if ID lookup fails
+                if not final_asset_type_name:
+                    final_asset_type_name = manual_details.get('type', acc_type)
+                # --- End explicit lookup --- NEW
+
                 combined = {
-                    'id': ynab_id, 'name': acc_dict.get('name'),
-                    'type': manual_details.get('type', acc_type),
+                    'id': ynab_id,
+                    # --- FIX: Prioritize manual name --- #
+                    'name': manual_details.get('name') or acc_dict.get('name'),
+                    # Use the explicitly looked-up type name
+                    'type': final_asset_type_name,
+                    'asset_type_id': asset_type_id, # Keep the ID
                     'bank': manual_details.get('bank'),
-                    'value': acc_dict.get('balance', 0) / 1000.0,
+                    # Keep the original balance field for consistency
+                    'balance': acc_dict.get('balance', 0),
+                    # --- FIX: Prioritize manual current_value --- #
+                    # Use manual current_value if present, otherwise calculate from YNAB balance
+                    'value': manual_details.get('current_value') if manual_details.get('current_value') is not None else acc_dict.get('balance', 0) / 1000.0,
                     'value_last_updated': acc_dict.get('last_modified_on'),
+                    'ynab_value_last_updated_on': acc_dict.get('last_reconciled_at'),
                     'entity_id': manual_details.get('entity_id'), 'shares': manual_details.get('shares'),
                     'is_ynab': True, 'deleted': False, 'on_budget': acc_dict.get('on_budget'),
                     'ynab_type': acc_type
@@ -340,21 +522,58 @@ def get_all_data():
             # Process Liabilities
             elif acc_type in potential_liability_types:
                 manual_details = manual_liabilities_data.get(ynab_id, {})
+                manual_type_name = manual_details.get('liability_type') # Get manually set type name
+
+                final_liability_type_name = manual_type_name # Default to manual type name if set
+
+                if not final_liability_type_name: # If no manual type was set...
+                    # Fetch managed types (list of dicts like {'id': '...', 'name': 'Student Loan'})
+                    managed_liability_types = data_manager.get_liability_types() # Ensure this returns the list of type objects
+                    # --- START DEBUG LOG ---
+                    _LOGGER.debug(f"Liability {ynab_id}: Fetched managed_liability_types: {managed_liability_types}")
+                    # --- END DEBUG LOG ---
+                    # Attempt to find a match based on the YNAB type (case-insensitive compare)
+                    matched_managed_type_obj = next((
+                        m_type for m_type in managed_liability_types
+                        # Compare the managed type's NAME (spaces removed) with the YNAB account type (case-insensitive)
+                        if isinstance(m_type, dict) and m_type.get('name', '').replace(' ', '').lower() == acc_type.lower()
+                    ), None) # Returns the full managed type object or None
+                    # --- START DEBUG LOG ---
+                    _LOGGER.debug(f"Liability {ynab_id}: YNAB acc_type='{acc_type}', Matched managed obj (by name, spaces removed): {matched_managed_type_obj}") # Updated log
+                    # --- END DEBUG LOG ---
+
+                    if matched_managed_type_obj:
+                        final_liability_type_name = matched_managed_type_obj.get('name', acc_type) # Use the 'name' field from the matched object
+                        # --- START DEBUG LOG ---
+                        _LOGGER.debug(f"Liability {ynab_id}: Using managed type name: '{final_liability_type_name}'")
+                        # --- END DEBUG LOG ---
+                    else:
+                        _LOGGER.warning(f"Could not find managed liability type with NAME matching YNAB type '{acc_type}' for liability {ynab_id}. Defaulting to raw type.")
+                        final_liability_type_name = acc_type # Fallback to raw YNAB type if no match
+                        # --- START DEBUG LOG ---
+                        _LOGGER.debug(f"Liability {ynab_id}: Falling back to raw YNAB type: '{final_liability_type_name}'")
+                        # --- END DEBUG LOG ---
+
                 combined = {
-                    **acc_dict, 'liability_type': manual_details.get('liability_type', acc_type),
-                    'bank': manual_details.get('bank'), 'value': acc_dict.get('balance', 0),
+                    **acc_dict,
+                    'liability_type': final_liability_type_name, # Use the determined final type name
+                    'bank': manual_details.get('bank'),
+                    'value': acc_dict.get('balance', 0), # Keep raw balance
                     'value_last_updated': acc_dict.get('last_modified_on'),
+                    'ynab_value_last_updated_on': acc_dict.get('last_reconciled_at'),
                     'interest_rate': manual_details.get('interest_rate'),
                     'start_date': manual_details.get('start_date'),
                     'notes': manual_details.get('notes', acc_dict.get('note')),
-                    'is_ynab': True, 'ynab_type': acc_type
+                    'is_ynab': True,
+                    'ynab_type': acc_type
                 }
                 combined_liabilities.append(combined)
                 processed_liability_ids.add(ynab_id)
 
             # Process Credit Cards
             elif acc_type in potential_credit_card_types:
-                manual_details = data_manager.get_manual_credit_card_details(ynab_id)
+                # Ensure manual_details is always a dictionary
+                manual_details = data_manager.get_manual_credit_card_details(ynab_id) or {}
                 combined = {
                     **acc_dict, # YNAB data comes first
                     # Manually specified fields override YNAB where applicable
@@ -368,6 +587,7 @@ def get_all_data():
                     'credit_limit': manual_details.get('credit_limit'),
                     'payment_methods': manual_details.get('payment_methods', []),
                     'notes': manual_details.get('notes', acc_dict.get('note')),
+                    'ynab_value_last_updated_on': acc_dict.get('last_reconciled_at'),
                     # --- ADDED REWARD FIELDS ---
                     'base_rate': manual_details.get('base_rate', 0.0),
                     'reward_system': manual_details.get('reward_system', 'Cashback'),
@@ -400,12 +620,14 @@ def get_all_data():
                 all_assets_combined.append(data)
 
         # Add purely manual liabilities
-        for liability_id, data in manual_only_liabilities_dict.items():
-            if liability_id not in processed_liability_ids:
-                data.setdefault('is_ynab', False)
-                data.setdefault('name', f"Manual Liability ({data.get('type', 'Unknown')})")
-                data['liability_type'] = data.get('type') # Ensure consistency
-                combined_liabilities.append(data)
+        # Iterate through all fetched liabilities and filter for manual ones
+        for liability_id, data in manual_liabilities_data.items():
+            if not data.get('is_ynab'): # Check if it's a manual-only liability
+                if liability_id not in processed_liability_ids:
+                    # data.setdefault('is_ynab', False) # Already known to be False
+                    data.setdefault('name', f"Manual Liability ({data.get('type', 'Unknown')})")
+                    data['liability_type'] = data.get('type') # Ensure consistency
+                    combined_liabilities.append(data)
 
         # --- Fetch Transactions (KEEP THIS) ---
         try:
@@ -449,12 +671,19 @@ def get_all_data():
             "banks": data_manager.get_banks(),
             "account_types": data_manager.get_account_types(), # Added missing account types
             "liability_types": data_manager.get_liability_types(),
-            # --- Add Manual Assets Dict --- NEW ---
-            "manual_assets": manual_assets_dict
-            # --- End Manual Assets Dict --- NEW ---
+            # --- ADD CONFIG SETTING --- #
+            "config": {
+                "use_calculated_asset_value": data_manager.get_setting("use_calculated_asset_value", False)
+            }
+            # --- END ADD CONFIG SETTING --- #
         }
         # Simplified log message
-        _LOGGER.debug(f"Returning all_data: Accounts={len(combined_accounts)}, Assets={len(all_assets_combined)}, Liabilities={len(combined_liabilities)}, CreditCards={len(combined_credit_cards)}, Transactions={len(transactions)}, Scheduled={len(scheduled_transactions)}, ManualAssets={len(all_data['manual_assets'])}, ManagedCategories={len(all_data['managed_categories'])}, ManagedPayees={len(all_data['managed_payees'])}")
+        _LOGGER.debug(
+            f"Returning all_data: Accounts={len(combined_accounts)}, Assets={len(all_assets_combined)}, "
+            f"Liabilities={len(combined_liabilities)}, CreditCards={len(combined_credit_cards)}, "
+            f"Transactions={len(transactions)}, Scheduled={len(scheduled_transactions)}, "
+            f"ManagedCategories={len(all_data['managed_categories'])}, ManagedPayees={len(all_data['managed_payees'])}"
+        )
         return jsonify(all_data)
 
     except Exception as main_e:
@@ -499,7 +728,7 @@ def get_accounts():
                 # Get manual details for this account
                 manual_details = data_manager.get_manual_account_details(ynab_id, account_type=acc_type)
                 allocation_rules = manual_details.get('allocation_rules', [])
-                allocations = calculate_allocations(acc_dict.get('balance', 0), allocation_rules)
+                allocations = calculate_allocations(acc_dict.get('cleared_balance', 0), allocation_rules)
 
                 # Determine final account type (prioritize manual, fallback to Title Case YNAB type)
                 final_account_type = manual_details.get('account_type', acc_type.title() if acc_type else "Unknown")
@@ -1952,9 +2181,97 @@ def get_best_scenarios_api():
         _LOGGER.error(f"Error fetching best reward scenarios: {e}", exc_info=True)
         return jsonify({"error": f"Internal server error getting scenarios: {str(e)}"}), 500
 
-# Register the API blueprint with the standard /api prefix
-app.register_blueprint(api_bp, url_prefix='/api')
+# --- New Endpoint for Adjustment Transactions ---
+@api_bp.route('/create_adjustment_transaction', methods=['POST'])
+@supervisor_token_required
+def create_adjustment_transaction():
+    if not request.is_json:
+        return jsonify({"error": "Request must be JSON"}), 400
 
+    data = request.get_json()
+    account_id = data.get('account_id')
+    amount = data.get('amount') # Expected in milliunits
+
+    if not account_id or amount is None: # Allow amount to be 0
+        return jsonify({"error": "Missing required fields: account_id, amount"}), 400
+
+    try:
+        amount_int = int(amount)
+    except (ValueError, TypeError):
+        return jsonify({"error": "Invalid amount format. Must be an integer (milliunits)."}), 400
+
+    # Construct transaction payload for YNAB API
+    # transaction_data = { ... } # REMOVED - We will build the object directly
+
+    try:
+        _LOGGER.info(f"Attempting to create YNAB adjustment transaction for account {account_id} with amount {amount_int}") # Log amount too
+        if not ynab_client or not ynab_client.is_configured():
+             _LOGGER.error("YNAB client not available or configured for adjustment.")
+             return jsonify({"error": "YNAB client not configured"}), 500
+
+        # Use the ynab_client instance from the app context
+        # REMOVED manual object creation
+        # from ynab_api.model.save_transaction_wrapper import SaveTransactionWrapper
+        # from ynab_api.model.save_transaction import SaveTransaction # Import SaveTransaction
+
+        # # 1. Create the SaveTransaction object directly
+        # save_transaction = SaveTransaction(
+        #     account_id=account_id,
+        #     date=datetime.now().date(), # Use date object
+        #     amount=amount_int,
+        #     payee_name="Market Adjustment", # Consistent payee name
+        #     cleared="cleared",
+        #     approved=True,
+        #     memo=f"Automatic adjustment from HA reconciliation {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+        #     # Optional fields like payee_id, category_id can be added if needed
+        # )
+        # _LOGGER.debug(f"Prepared SaveTransaction object: {save_transaction}")
+
+        # # 2. Create the wrapper using the SaveTransaction object
+        # save_transaction_wrapper = SaveTransactionWrapper(transaction=save_transaction)
+        # _LOGGER.debug(f"Prepared SaveTransactionWrapper: {save_transaction_wrapper}")
+
+        try:
+            # 3. Call ynab_client.create_transaction with individual arguments
+            response_data = ynab_client.create_transaction(
+                account_id=account_id,
+                date=datetime.now().date(),
+                amount=amount_int,
+                payee_name="Market Adjustment",
+                memo=f"Automatic adjustment from HA reconciliation {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                cleared="cleared",
+                approved=True
+            )
+            _LOGGER.info(f"YNAB API Response Data: {response_data}") # Log the response data directly
+            # Check response structure and content (response_data is the 'data' part of the API response)
+            if response_data and hasattr(response_data, 'transaction'):
+                 _LOGGER.info(f"Successfully created transaction ID: {response_data.transaction.id}")
+                 return jsonify({"message": "Adjustment transaction created successfully", "transaction_id": response_data.transaction.id}), 201
+            elif response_data and hasattr(response_data, 'transactions'): # Handle bulk response just in case
+                 _LOGGER.info(f"Successfully created transactions (bulk?): {[t.id for t in response_data.transactions]}")
+                 return jsonify({"message": "Adjustment transactions created successfully", "transaction_ids": [t.id for t in response_data.transactions]}), 201
+            else:
+                _LOGGER.warning(f"YNAB API response structure unknown or missing transaction data: {response_data}")
+                return jsonify({"message": "Adjustment transaction possibly created, but response format unexpected."}), 200 # Or 202 Accepted
+
+        except ApiException as e:
+            _LOGGER.error(f"YNAB API Exception when creating transaction: {e}")
+            _LOGGER.error(f"Exception Body: {e.body}")
+            _LOGGER.error(f"Exception Headers: {e.headers}")
+            return jsonify({"error": f"YNAB API error: {e.reason}", "details": str(e.body)}), e.status
+        except Exception as e:
+            _LOGGER.exception("Unexpected error creating YNAB transaction")
+            return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
+    except Exception as e:
+        _LOGGER.exception("Error processing adjustment transaction request")
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+# --- End New Endpoint ---
+
+# Register the API blueprint WITHOUT the /api prefix
+# This seems necessary for ingress routing to work correctly with blueprints
+# after removing all explicit @app.route ingress handlers.
+app.register_blueprint(api_bp, url_prefix='/api') # RESTORED url_prefix='/api'
 
 # --- Monkey Patch YNAB Account Type --- BEGIN
 # (Restored from previous version)
@@ -1983,13 +2300,14 @@ except Exception as patch_exc:
 # --- Monkey Patch YNAB Account Type --- END
 
 # --- Catch-all route for serving the frontend static files ---
-@app.route('/', defaults={'path': ''})
-@app.route('/<path:path>')
+@app.route('/', defaults={'path': ''}, methods=['GET']) # Add methods=['GET']
+@app.route('/<path:path>', methods=['GET']) # Add methods=['GET']
 def catch_all(path):
+    """Serve the static files or the main index.html for client-side routing.
+
+    Handles only GET requests.
     """
-    Catch-all route handler for serving the frontend static files and handling ingress requests.
-    """
-    # Add detailed debugging for all requests
+    # Log entry into catch_all specifically
     _LOGGER.debug(f"Catch-all route accessed with path: '{path}'")
     _LOGGER.debug(f"Request URL: {request.url}")
     _LOGGER.debug(f"Request path: {request.path}")
@@ -2039,625 +2357,6 @@ def catch_all(path):
         # Otherwise, serve the requested static file directly
         _LOGGER.debug(f"Serving static file: {path}")
         return send_from_directory(app.static_folder, path)
-
-# --- Explicit Ingress Route for /all_data ---
-@app.route('/api/hassio_ingress/<path:addon_id>/api/all_data')
-@supervisor_token_required # Apply decorator here as well
-def direct_ingress_all_data(addon_id):
-    """Direct endpoint for accessing all_data through the ingress path"""
-    _LOGGER.info(f"✅ DIRECT INGRESS HANDLER - /api/all_data called via ingress with addon_id: {addon_id}")
-    # Call the original blueprint function
-    # Find the view function associated with the blueprint endpoint 'api.get_all_data'
-    view_func = app.view_functions.get('api.get_all_data')
-    if view_func:
-        return view_func()
-    else:
-        _LOGGER.error("Could not find view function for 'api.get_all_data' to handle ingress request")
-        return jsonify({"error": "Internal routing error"}), 500
-
-# --- Register direct endpoints for liabilities API ---
-@app.route('/api/hassio_ingress/<path:addon_id>/api/liabilities', methods=['GET'])
-def direct_get_liabilities(addon_id):
-    """Direct endpoint for getting liabilities through the ingress path"""
-    _LOGGER.info(f"🚨 DIRECT INGRESS HANDLER - liabilities GET called with addon_id: {addon_id}")
-    response = get_all_data()
-    try:
-        data = response.get_json()
-        return jsonify(data.get('liabilities', []))
-    except:
-        return response
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/liabilities/<liability_id>', methods=['DELETE'])
-def direct_delete_liability(addon_id, liability_id):
-    """Direct endpoint for deleting a liability through the ingress path"""
-    _LOGGER.info(f"🚨 DIRECT INGRESS HANDLER - liabilities DELETE called with addon_id: {addon_id}, liability_id: {liability_id}")
-    return delete_manual_liability_route(liability_id)
-
-# --- Register direct endpoints for assets API ---
-@app.route('/api/hassio_ingress/<path:addon_id>/api/assets', methods=['GET'])
-def direct_get_assets(addon_id):
-    """Direct endpoint for getting assets through the ingress path"""
-    _LOGGER.info(f"🚨 DIRECT INGRESS HANDLER - assets GET called with addon_id: {addon_id}")
-    response = get_all_data()
-    try:
-        data = response.get_json()
-        return jsonify(data.get('assets', []))
-    except:
-        return response
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/assets/<asset_id>', methods=['DELETE'])
-def direct_delete_asset(addon_id, asset_id):
-    """Direct endpoint for deleting an asset through the ingress path"""
-    _LOGGER.info(f"🚨 DIRECT INGRESS HANDLER - assets DELETE called with addon_id: {addon_id}, asset_id: {asset_id}")
-    return delete_asset(asset_id)
-
-# --- New credit card specific endpoints ---
-@app.route('/api/cards/list')
-def get_credit_cards():
-    """Direct endpoint for getting all credit cards"""
-    _LOGGER.info("Credit cards list endpoint called")
-    try:
-        if not ynab_client.is_configured():
-            return jsonify({"error": "YNAB client not configured"}), 500
-
-        # Get credit cards through the same process used in get_all_data
-        ynab_accounts_raw = ynab_client.get_accounts() or []
-        combined_credit_cards = []
-
-        # Process only credit card accounts
-        for acc in ynab_accounts_raw:
-            if acc.deleted:
-                continue
-            acc_dict = acc.to_dict()
-            ynab_id = acc_dict.get('id')
-            if not ynab_id:
-                continue
-
-            acc_type = acc_dict.get('type')
-            if acc_type == 'creditCard':
-                manual_details = data_manager.get_manual_credit_card_details(ynab_id)
-                combined = {
-                    **acc_dict,
-                    'card_name': manual_details.get('card_name', acc_dict.get('name')),
-                    'bank': manual_details.get('bank'),
-                    'include_bank_in_name': manual_details.get('include_bank_in_name', True),
-                    'last_4_digits': manual_details.get('last_4_digits'),
-                    'expiration_date': manual_details.get('expiration_date'),
-                    'auto_pay_day_1': manual_details.get('auto_pay_day_1'),
-                    'auto_pay_day_2': manual_details.get('auto_pay_day_2'),
-                    'credit_limit': manual_details.get('credit_limit'),
-                    'payment_methods': manual_details.get('payment_methods', []),
-                    'notes': manual_details.get('notes', acc_dict.get('note')),
-                    'rewards_rules': manual_details.get('rewards_rules', []),
-                    'reward_program_details': manual_details.get('reward_program_details', {})
-                }
-                combined_credit_cards.append(combined)
-
-        _LOGGER.debug(f"Returning {len(combined_credit_cards)} credit cards")
-        return jsonify(combined_credit_cards)
-    except Exception as e:
-        _LOGGER.exception(f"Error fetching credit cards: {e}")
-        return jsonify({"error": f"Error fetching credit cards: {str(e)}"}), 500
-
-@app.route('/api/cards/<card_id>')
-def get_credit_card(card_id):
-    """Direct endpoint for getting a specific credit card"""
-    _LOGGER.info(f"Credit card detail endpoint called for card {card_id}")
-    try:
-        if not ynab_client.is_configured():
-            return jsonify({"error": "YNAB client not configured"}), 500
-
-        # Get the specific credit card from YNAB
-        ynab_accounts_raw = ynab_client.get_accounts() or []
-        card_account = None
-
-        # Find the specific credit card
-        for acc in ynab_accounts_raw:
-            if acc.deleted:
-                continue
-
-            acc_dict = acc.to_dict()
-            ynab_id = acc_dict.get('id')
-
-            if ynab_id == card_id and acc_dict.get('type') == 'creditCard':
-                manual_details = data_manager.get_manual_credit_card_details(ynab_id)
-                card_account = {
-                    **acc_dict,
-                    'card_name': manual_details.get('card_name', acc_dict.get('name')),
-                    'bank': manual_details.get('bank'),
-                    'include_bank_in_name': manual_details.get('include_bank_in_name', True),
-                    'last_4_digits': manual_details.get('last_4_digits'),
-                    'expiration_date': manual_details.get('expiration_date'),
-                    'auto_pay_day_1': manual_details.get('auto_pay_day_1'),
-                    'auto_pay_day_2': manual_details.get('auto_pay_day_2'),
-                    'credit_limit': manual_details.get('credit_limit'),
-                    'payment_methods': manual_details.get('payment_methods', []),
-                    'notes': manual_details.get('notes', acc_dict.get('note')),
-                    'rewards_rules': manual_details.get('rewards_rules', []),
-                    'reward_program_details': manual_details.get('reward_program_details', {})
-                }
-                break
-
-        if card_account:
-            return jsonify(card_account)
-        else:
-            return jsonify({"error": f"Credit card with ID {card_id} not found"}), 404
-    except Exception as e:
-        _LOGGER.exception(f"Error fetching credit card {card_id}: {e}")
-        return jsonify({"error": f"Error fetching credit card: {str(e)}"}), 500
-
-# Special handler for direct API access from any path
-@app.route('/all_data')
-def api_all_data_direct():
-    """Direct endpoint for all_data, accessible from any URL path"""
-    _LOGGER.info("🚨 DIRECT ROOT HANDLER - all_data called")
-    return get_all_data()
-
-# Add these after imports but before any routes
-
-# Add debug logging for all requests
-@app.before_request
-def log_request_info():
-    """Log detailed information about every request for debugging."""
-    _LOGGER.info(f"🔍 DEBUG REQUEST: Method={request.method} URL={request.url}")
-    _LOGGER.info(f"🔍 DEBUG HEADERS: {dict(request.headers)}")
-    _LOGGER.info(f"🔍 DEBUG PATH: {request.path}")
-    _LOGGER.info(f"🔍 DEBUG ARGS: {request.args}")
-    try:
-        if request.is_json:
-            _LOGGER.info(f"🔍 DEBUG JSON: {request.json}")
-        elif request.form:
-            _LOGGER.info(f"🔍 DEBUG FORM: {request.form}")
-        elif request.data:
-            _LOGGER.info(f"🔍 DEBUG DATA: {request.data[:200]}")  # First 200 bytes only
-    except Exception as e:
-        _LOGGER.info(f"🔍 Could not read request body: {e}")
-    return None  # Continue with request
-
-# Add this after the existing direct_save_manual_account_ingress handler
-
-# Emergency catchall handler with direct file access approach
-@app.route('/api/hassio_ingress/<path:addon_id>/api/manual_account/<path:account_path>', methods=['POST', 'PUT'])
-def debug_save_account_ingress(addon_id, account_path):
-    """Emergency catchall for debugging account save issues"""
-    _LOGGER.info(f"🚨 EMERGENCY DEBUG - Hit catchall route for account path: {account_path}")
-    _LOGGER.info(f"🚨 Addon ID: {addon_id}")
-    _LOGGER.info(f"🚨 Request method: {request.method}")
-    _LOGGER.info(f"🚨 Headers: {dict(request.headers)}")
-
-    try:
-        data = request.json if request.is_json else {}
-        _LOGGER.info(f"🚨 Received payload: {data}")
-
-        # SIMPLEST APPROACH: Just save directly without any validation or processing
-        account_id = account_path
-        _LOGGER.info(f"Using account_id: {account_id}")
-
-        # Direct data save approach - avoid any complex data_manager calls
-        import json
-        accounts_file = os.path.join("/data", "manual_accounts.json")
-
-        # Read existing accounts
-        try:
-            with open(accounts_file, 'r') as f:
-                accounts = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
-            accounts = {}
-
-        # If details are nested in a 'details' key, extract them
-        if isinstance(data, dict) and 'details' in data and isinstance(data['details'], dict):
-            details_to_save = data['details']
-        else:
-            details_to_save = data
-
-        _LOGGER.info(f"Attempting to save: {details_to_save}")
-
-        # Store the details directly
-        accounts[account_id] = details_to_save
-
-        # Direct write to file
-        with open(accounts_file, 'w') as f:
-            json.dump(accounts, f, indent=4)
-
-        _LOGGER.info(f"✅ Successfully wrote data to file for account {account_id}")
-
-        # Return a simple success
-        return jsonify({"success": True}), 200
-
-    except Exception as e:
-        import traceback
-        _LOGGER.error(f"💥 CRITICAL ERROR: {e}")
-        _LOGGER.error(f"💥 Traceback: {traceback.format_exc()}")
-        return jsonify(error=str(e)), 500
-
-# Add this new emergency endpoint with a completely different URL pattern
-@app.route('/api/hassio_ingress/<path:addon_id>/emergency_save_account', methods=['POST', 'PUT'])
-def emergency_save_account(addon_id):
-    """Last resort endpoint for saving account details"""
-    _LOGGER.info(f"🆘 EMERGENCY SAVE ACCOUNT ENDPOINT HIT - addon_id: {addon_id}")
-    _LOGGER.info(f"🆘 Request method: {request.method}")
-    _LOGGER.info(f"🆘 Request URL: {request.url}")
-    _LOGGER.info(f"🆘 Request headers: {dict(request.headers)}")
-
-    try:
-        # Get the data from the request
-        if request.is_json:
-            data = request.json
-            _LOGGER.info(f"🆘 Request JSON data: {data}")
-        else:
-            _LOGGER.error("❌ Request is not JSON")
-            return jsonify(error="Request must be JSON"), 400
-
-        # Extract account_id and details from request body
-        if not isinstance(data, dict):
-            _LOGGER.error("❌ Invalid data format (not a dict)")
-            return jsonify(error="Invalid data format"), 400
-
-        if 'account_id' not in data:
-            _LOGGER.error("❌ Missing account_id in request")
-            return jsonify(error="Missing account_id"), 400
-
-        account_id = data['account_id']
-        _LOGGER.info(f"🆘 Account ID from request: {account_id}")
-
-        # Direct file access with extremely simple approach
-        import json
-        accounts_file = "/data/manual_accounts.json"
-
-        # Read the existing accounts file with error handling for common issues
-        try:
-            with open(accounts_file, 'r') as f:
-                accounts = json.load(f)
-                _LOGGER.info(f"🆘 Successfully read accounts file with {len(accounts)} accounts")
-        except FileNotFoundError:
-            _LOGGER.warning("⚠️ Accounts file not found, creating new one")
-            accounts = {}
-        except json.JSONDecodeError:
-            _LOGGER.warning("⚠️ Accounts file exists but is not valid JSON, creating empty dict")
-            accounts = {}
-
-        # Extract the account details to save
-        if 'details' in data and isinstance(data['details'], dict):
-            details = data['details']
-        else:
-            # Just use the whole data object except account_id
-            details = {k: v for k, v in data.items() if k != 'account_id'}
-
-        _LOGGER.info(f"🆘 Details to save: {details}")
-
-        # Update the account in the accounts dict
-        accounts[account_id] = details
-        _LOGGER.info(f"🆘 Updated accounts dict, now has {len(accounts)} accounts")
-
-        # Save the updated accounts file
-        try:
-            with open(accounts_file, 'w') as f:
-                json.dump(accounts, f, indent=2)
-            _LOGGER.info(f"🆘 Successfully wrote accounts file")
-        except Exception as e:
-            _LOGGER.error(f"❌ Error writing accounts file: {e}")
-            return jsonify(error=f"Error writing accounts file: {e}"), 500
-
-        # Return a simple success response
-        return jsonify(success=True, message=f"Account {account_id} saved successfully"), 200
-
-    except Exception as e:
-        import traceback
-        _LOGGER.error(f"💥 Error in emergency save: {e}")
-        _LOGGER.error(f"💥 Traceback: {traceback.format_exc()}")
-        return jsonify(error=str(e)), 500
-
-# Add this additional emergency endpoint with an even simpler URL pattern
-@app.route('/api/hassio_ingress/<path:addon_id>/simple_save/<account_id>', methods=['POST', 'PUT', 'GET'])
-def simple_save_account(addon_id, account_id):
-    """Ultra simple endpoint for saving account details with account ID in the URL path"""
-    _LOGGER.info(f"💾 SIMPLE SAVE ENDPOINT HIT - addon_id: {addon_id}, account_id: {account_id}")
-    _LOGGER.info(f"💾 Request method: {request.method}")
-
-    # Just save the request body directly with minimal processing
-    try:
-        import json
-        accounts_file = "/data/manual_accounts.json"
-
-        # Get data from request
-        data = {}
-        if request.is_json:
-            data = request.json
-            _LOGGER.info(f"💾 Got JSON data: {data}")
-        elif request.form:
-            data = {k: v for k, v in request.form.items()}
-            _LOGGER.info(f"💾 Got form data: {data}")
-        else:
-            # If this is a GET request, just return success without saving
-            if request.method == 'GET':
-                _LOGGER.info("💾 GET request received, returning success without saving")
-                return jsonify(success=True, message="GET request successful"), 200
-            _LOGGER.warning("💾 No JSON or form data in request")
-
-        # Read existing accounts file
-        try:
-            with open(accounts_file, 'r') as f:
-                accounts = json.load(f)
-                _LOGGER.info(f"💾 Read accounts file with {len(accounts)} accounts")
-        except (FileNotFoundError, json.JSONDecodeError):
-            accounts = {}
-            _LOGGER.info("💾 Created new accounts dictionary")
-
-        # Extract details if nested
-        if isinstance(data, dict) and 'details' in data and isinstance(data['details'], dict):
-            details = data['details']
-            _LOGGER.info("💾 Extracted nested details")
-        else:
-            details = data
-            _LOGGER.info("💾 Using full data object as details")
-
-        # Update the account
-        accounts[account_id] = details
-        _LOGGER.info(f"💾 Updated account {account_id}")
-
-        # Save to file
-        with open(accounts_file, 'w') as f:
-            json.dump(accounts, f, indent=2)
-            _LOGGER.info("💾 Saved accounts file")
-
-        return jsonify(success=True, message=f"Account {account_id} saved with simple_save"), 200
-
-    except Exception as e:
-        import traceback
-        _LOGGER.error(f"💾 Error in simple save: {e}")
-        _LOGGER.error(f"💾 Traceback: {traceback.format_exc()}")
-        return jsonify(error=str(e)), 500
-
-@app.route('/api/direct_form_submit', methods=['POST'])
-def direct_form_submit():
-    """A direct form submission endpoint that doesn't rely on complex routing"""
-    _LOGGER.info("📝 DIRECT FORM SUBMIT ENDPOINT HIT")
-    _LOGGER.info(f"📝 Request method: {request.method}")
-    _LOGGER.info(f"📝 Request form data: {request.form}")
-
-    try:
-        # Extract account_id and payload from form data
-        account_id = request.form.get('account_id')
-        payload_str = request.form.get('payload')
-
-        if not account_id:
-            _LOGGER.error("📝 Missing account_id in form data")
-            return "Missing account_id", 400
-
-        if not payload_str:
-            _LOGGER.error("📝 Missing payload in form data")
-            return "Missing payload", 400
-
-        _LOGGER.info(f"📝 Account ID: {account_id}")
-        _LOGGER.info(f"📝 Payload JSON: {payload_str}")
-
-        # Parse the payload JSON
-        import json
-        try:
-            payload = json.loads(payload_str)
-            _LOGGER.info(f"📝 Parsed payload: {payload}")
-        except json.JSONDecodeError as e:
-            _LOGGER.error(f"📝 Failed to parse payload JSON: {e}")
-            return "Invalid payload JSON", 400
-
-        # Save the account details
-        accounts_file = "/data/manual_accounts.json"
-
-        # Read existing accounts
-        try:
-            with open(accounts_file, 'r') as f:
-                accounts = json.load(f)
-                _LOGGER.info(f"📝 Read accounts file with {len(accounts)} accounts")
-        except (FileNotFoundError, json.JSONDecodeError):
-            accounts = {}
-            _LOGGER.info("📝 Created new accounts dictionary")
-
-        # Save the account details
-        accounts[account_id] = payload
-        _LOGGER.info(f"📝 Updated account {account_id}")
-
-        # Write back to file
-        with open(accounts_file, 'w') as f:
-            json.dump(accounts, f, indent=2)
-            _LOGGER.info("📝 Saved accounts file")
-
-        # Return success with plain text to avoid any JSON parsing issues
-        return "OK", 200
-
-    except Exception as e:
-        import traceback
-        _LOGGER.error(f"📝 Error processing form submission: {e}")
-        _LOGGER.error(traceback.format_exc())
-        return f"Error: {str(e)}", 500
-
-# Make sure to also register this route at the ingress path
-@app.route('/api/hassio_ingress/<path:addon_id>/api/direct_form_submit', methods=['POST'])
-def direct_form_submit_ingress(addon_id):
-    """Ingress version of the direct form submission endpoint"""
-    _LOGGER.info(f"📝 DIRECT FORM SUBMIT INGRESS ENDPOINT HIT - addon_id: {addon_id}")
-    return direct_form_submit()
-
-# Add the new route with exact pattern
-@app.route("/api/hassio_ingress/<path:addon_id>/api/simple_save/<account_id>", methods=["POST", "PUT", "GET"])
-def api_simple_save_account(addon_id, account_id):
-    """API version of the ultra simple endpoint for saving account details with account ID in the URL path"""
-    _LOGGER.info(f"🔄 API SIMPLE SAVE ENDPOINT HIT - addon_id: {addon_id}, account_id: {account_id}")
-    _LOGGER.info(f"🔄 Request method: {request.method}")
-
-    # Just save the request body directly with minimal processing
-    try:
-        import json
-        accounts_file = "/data/manual_accounts.json"
-
-        # Get data from request
-        data = {}
-        if request.is_json:
-            data = request.json
-            _LOGGER.info(f"🔄 Got JSON data: {data}")
-        elif request.form:
-            data = {k: v for k, v in request.form.items()}
-            _LOGGER.info(f"🔄 Got form data: {data}")
-        else:
-            # If this is a GET request, let's check if the account exists and return it
-            if request.method == 'GET':
-                _LOGGER.info("🔄 GET request received, checking for account")
-                try:
-                    with open(accounts_file, 'r') as f:
-                        accounts = json.load(f)
-                        if account_id in accounts:
-                            _LOGGER.info(f"🔄 Found account {account_id}, returning data")
-                            return jsonify(accounts[account_id]), 200
-                        else:
-                            _LOGGER.info(f"🔄 Account {account_id} not found")
-                            return jsonify({"error": "Account not found"}), 404
-                except (FileNotFoundError, json.JSONDecodeError):
-                    _LOGGER.info("🔄 No accounts file found for GET request")
-                    return jsonify({"error": "No accounts file found"}), 404
-
-            _LOGGER.warning("🔄 No JSON or form data in request")
-
-        # Read existing accounts file
-        try:
-            with open(accounts_file, 'r') as f:
-                accounts = json.load(f)
-                _LOGGER.info(f"🔄 Read accounts file with {len(accounts)} accounts")
-        except (FileNotFoundError, json.JSONDecodeError):
-            accounts = {}
-            _LOGGER.info("🔄 Created new accounts dictionary")
-
-        # Extract details if nested
-        if isinstance(data, dict) and 'details' in data and isinstance(data['details'], dict):
-            details = data['details']
-            _LOGGER.info("🔄 Extracted nested details")
-        else:
-            details = data
-            _LOGGER.info("🔄 Using full data object as details")
-
-        # Update the account
-        accounts[account_id] = details
-        _LOGGER.info(f"🔄 Updated account {account_id}")
-
-        # Save to file
-        with open(accounts_file, 'w') as f:
-            json.dump(accounts, f, indent=2)
-            _LOGGER.info("🔄 Saved accounts file")
-
-        return jsonify(success=True, message=f"Account {account_id} saved with API simple_save"), 200
-
-    except Exception as e:
-        import traceback
-        _LOGGER.error(f"🔄 Error in API simple save: {e}")
-        _LOGGER.error(f"🔄 Traceback: {traceback.format_exc()}")
-        return jsonify(error=str(e)), 500
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/banks', methods=['GET'])
-def direct_get_banks(addon_id):
-    """Ingress endpoint for getting banks"""
-    _LOGGER.info(f"Ingress GET /banks request received - addon_id: {addon_id}")
-    return get_banks()
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/banks', methods=['POST'])
-def direct_add_bank(addon_id):
-    """Ingress endpoint for adding a bank"""
-    _LOGGER.info(f"Ingress POST /banks request received - addon_id: {addon_id}")
-    return add_bank()
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/banks', methods=['PUT'])
-def direct_update_bank(addon_id):
-    """Ingress endpoint for updating a bank"""
-    _LOGGER.info(f"Ingress PUT /banks request received - addon_id: {addon_id}")
-    return update_bank()
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/banks', methods=['DELETE'])
-def direct_delete_bank(addon_id):
-    """Ingress endpoint for deleting a bank"""
-    _LOGGER.info(f"Ingress DELETE /banks request received - addon_id: {addon_id}")
-    return delete_bank()
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/account_types', methods=['GET'])
-def direct_get_account_types(addon_id):
-    """Ingress endpoint for getting account types"""
-    _LOGGER.info(f"Ingress GET /account_types request received - addon_id: {addon_id}")
-    return get_account_types()
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/account_types', methods=['POST'])
-def direct_add_account_type(addon_id):
-    """Ingress endpoint for adding an account type"""
-    _LOGGER.info(f"Ingress POST /account_types request received - addon_id: {addon_id}")
-    return add_account_type()
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/account_types', methods=['PUT'])
-def direct_update_account_type(addon_id):
-    """Ingress endpoint for updating an account type"""
-    _LOGGER.info(f"Ingress PUT /account_types request received - addon_id: {addon_id}")
-    return update_account_type()
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/account_types', methods=['DELETE'])
-def direct_delete_account_type(addon_id):
-    """Ingress endpoint for deleting an account type"""
-    _LOGGER.info(f"Ingress DELETE /account_types request received - addon_id: {addon_id}")
-    return delete_account_type()
-
-# Add ingress routes for managed categories
-@app.route('/api/hassio_ingress/<path:addon_id>/api/managed_categories', methods=['GET'])
-def direct_get_managed_categories(addon_id):
-    """Ingress endpoint for getting managed categories"""
-    _LOGGER.info(f"Ingress GET /managed_categories request received - addon_id: {addon_id}")
-    return get_managed_categories_api()
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/managed_categories', methods=['POST'])
-def direct_add_managed_category(addon_id):
-    """Ingress endpoint for adding a managed category"""
-    _LOGGER.info(f"Ingress POST /managed_categories request received - addon_id: {addon_id}")
-    return add_managed_category()
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/managed_categories/<category_id>', methods=['PUT'])
-def direct_update_managed_category(addon_id, category_id):
-    """Ingress endpoint for updating a managed category"""
-    _LOGGER.info(f"Ingress PUT /managed_categories/{category_id} request received - addon_id: {addon_id}")
-    return update_managed_category(category_id)
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/managed_categories/<category_id>', methods=['DELETE'])
-def direct_delete_managed_category(addon_id, category_id):
-    """Ingress endpoint for deleting a managed category"""
-    _LOGGER.info(f"Ingress DELETE /managed_categories/{category_id} request received - addon_id: {addon_id}")
-    return delete_managed_category(category_id)
-
-# Add ingress routes for managed payees
-@app.route('/api/hassio_ingress/<path:addon_id>/api/managed_payees', methods=['GET'])
-def direct_get_managed_payees(addon_id):
-    """Ingress endpoint for getting managed payees"""
-    _LOGGER.info(f"Ingress GET /managed_payees request received - addon_id: {addon_id}")
-    return get_managed_payees_api()
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/managed_payees', methods=['POST'])
-def direct_add_managed_payee(addon_id):
-    """Ingress endpoint for adding a managed payee"""
-    _LOGGER.info(f"Ingress POST /managed_payees request received - addon_id: {addon_id}")
-    return add_managed_payee()
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/managed_payees/<payee_id>', methods=['PUT'])
-def direct_update_managed_payee(addon_id, payee_id):
-    """Ingress endpoint for updating a managed payee"""
-    _LOGGER.info(f"Ingress PUT /managed_payees/{payee_id} request received - addon_id: {addon_id}")
-    return update_managed_payee(payee_id)
-
-@app.route('/api/hassio_ingress/<path:addon_id>/api/managed_payees/<payee_id>', methods=['DELETE'])
-def direct_delete_managed_payee(addon_id, payee_id):
-    """Ingress endpoint for deleting a managed payee"""
-    _LOGGER.info(f"Ingress DELETE /managed_payees/{payee_id} request received - addon_id: {addon_id}")
-    return delete_managed_payee(payee_id)
-
-# Add ingress routes for payment methods
-@app.route('/api/hassio_ingress/<path:addon_id>/api/payment_methods', methods=['GET', 'POST', 'DELETE', 'PUT'])
-def direct_manage_payment_methods(addon_id):
-    """Ingress endpoint for managing payment methods"""
-    _LOGGER.info(f"Ingress {request.method} /payment_methods request received - addon_id: {addon_id}")
-    try:
-        return manage_payment_methods()
-    except Exception as e:
-        _LOGGER.exception(f"Error in payment methods ingress route: {e}")
-        return jsonify({"error": str(e)}), 500
 
 # --- Emergency recovery routes ---
 @app.route("/api/reset_credit_cards", methods=["POST"])

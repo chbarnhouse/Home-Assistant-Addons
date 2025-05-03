@@ -42,6 +42,7 @@ function EditAssetModal({
     symbol: "",
     shares: "",
     value: "",
+    entity_id: "",
   };
   const [formData, setFormData] = useState(initialFormData);
   const [isStock, setIsStock] = useState(false);
@@ -88,6 +89,7 @@ function EditAssetModal({
           (initialTypeIsStock ? assetToEdit.shares : "") ||
           "",
         value: isYnabAsset ? "" : assetToEdit.value?.toString() || "0",
+        entity_id: details?.entity_id || "",
       });
       setIsStock(initialTypeIsStock);
     } catch (error) {
@@ -103,6 +105,7 @@ function EditAssetModal({
         symbol: assetToEdit.symbol || "",
         shares: assetToEdit.shares?.toString() || "",
         value: isYnabAsset ? "" : assetToEdit.value?.toString() || "0",
+        entity_id: "",
       });
       setIsStock(assetToEdit.type === "Stocks");
     } finally {
@@ -134,6 +137,7 @@ function EditAssetModal({
     if (name === "type_id" && !newIsStock) {
       updatedFormData.symbol = "";
       updatedFormData.shares = "";
+      updatedFormData.entity_id = "";
     }
 
     setFormData(updatedFormData);
@@ -148,13 +152,14 @@ function EditAssetModal({
     if (!formData.name.trim()) newErrors.name = "Asset name is required.";
     if (!formData.type_id) newErrors.type_id = "Asset type is required.";
 
-    if (!isYnabAsset) {
+    if (!isYnabAsset && !isStock) {
       if (
         !formData.value ||
         isNaN(formData.value) ||
         parseFloat(formData.value) < 0
       ) {
-        newErrors.value = "Valid current value is required for manual assets.";
+        newErrors.value =
+          "Valid current value is required for non-stock manual assets.";
       }
     }
 
@@ -191,9 +196,10 @@ function EditAssetModal({
       bank_id: formData.bank_id || null,
       symbol: isStock ? formData.symbol.trim() : null,
       shares: isStock && formData.shares ? parseFloat(formData.shares) : null,
+      entity_id: isStock ? formData.entity_id.trim() : null,
     };
 
-    if (!isYnabAsset) {
+    if (!isYnabAsset && !isStock) {
       payload.value = parseFloat(formData.value);
     }
 
@@ -204,12 +210,19 @@ function EditAssetModal({
       // Pass relative path to callApi
       const response = await callApi(`${MANUAL_ASSET_API}/${assetToEdit.id}`, {
         method: "POST", // Use POST or PUT based on backend expectation
-        body: payload,
+        body: JSON.stringify(payload), // Ensure payload is stringified
       });
 
       console.log("Save manual asset details response:", response);
 
-      onUpdateAsset(response.details || payload);
+      const updatedDetails = response.details || {
+        ...payload,
+        id: assetToEdit.id,
+        type: formData.type,
+        bank: formData.bank,
+      };
+
+      onUpdateAsset(updatedDetails);
       notify("Asset details updated successfully.", "success");
       onClose();
     } catch (error) {
@@ -346,13 +359,30 @@ function EditAssetModal({
                   helperText={errors.shares}
                   disabled={isLoading}
                 />
+                <TextField
+                  margin="normal"
+                  fullWidth
+                  id="entity_id"
+                  label="Home Assistant Entity ID (for price)"
+                  name="entity_id"
+                  autoComplete="off"
+                  placeholder="e.g., sensor.yahoo_finance_spsc"
+                  value={formData.entity_id}
+                  onChange={handleInputChange}
+                  error={!!errors.entity_id}
+                  helperText={
+                    errors.entity_id ||
+                    "The sensor state should be the stock price."
+                  }
+                  disabled={isLoading}
+                />
               </>
             )}
 
-            {!isYnabAsset && (
+            {!isStock && !isYnabAsset && (
               <TextField
                 margin="normal"
-                required
+                required={!isYnabAsset}
                 fullWidth
                 id="value"
                 label="Current Value"
@@ -375,7 +405,7 @@ function EditAssetModal({
         )}
       </DialogContent>
       <DialogActions>
-        <Button onClick={onClose} disabled={isLoading || isFetchingDetails}>
+        <Button onClick={onClose} disabled={isLoading}>
           Cancel
         </Button>
         <Button
@@ -396,11 +426,19 @@ EditAssetModal.propTypes = {
   onUpdateAsset: PropTypes.func.isRequired,
   assetToEdit: PropTypes.object,
   assetTypes: PropTypes.arrayOf(
-    PropTypes.shape({ id: PropTypes.string, name: PropTypes.string })
-  ).isRequired,
+    PropTypes.shape({
+      id: PropTypes.string.isRequired,
+      name: PropTypes.string.isRequired,
+    })
+  ),
   banks: PropTypes.arrayOf(
-    PropTypes.shape({ id: PropTypes.string, name: PropTypes.string })
-  ).isRequired,
+    PropTypes.shape({
+      id: PropTypes.string.isRequired,
+      name: PropTypes.string.isRequired,
+    })
+  ),
+  onOpenManageAssetTypes: PropTypes.func.isRequired,
+  onOpenManageBanks: PropTypes.func.isRequired,
 };
 
 export default EditAssetModal;

@@ -263,11 +263,24 @@ function LiabilitiesPage() {
     {
       field: "type",
       headerName: "Type",
-      minWidth: 150,
+      minWidth: 120,
       flex: 1,
-      // Explicitly render the value from the 'type' field
       renderCell: (params) => {
-        return params.value;
+        if (!params.row) return "N/A"; // Safety check
+
+        // Find the managed liability type object based on the raw ynab_type
+        // Compare raw ynab_type (e.g., 'studentLoan') with managed type name (e.g., 'Student Loan')
+        // after removing spaces and lowercasing both.
+        const managedType = liabilityTypes.find(
+          (type) =>
+            type.name.replace(/ /g, "").toLowerCase() ===
+            (params.row.ynab_type || "").toLowerCase()
+        );
+
+        // Display the managed name if found, otherwise fall back to the raw ynab_type or the existing liability_type
+        return managedType
+          ? managedType.name
+          : params.row.ynab_type || params.row.liability_type || "N/A";
       },
     },
     {

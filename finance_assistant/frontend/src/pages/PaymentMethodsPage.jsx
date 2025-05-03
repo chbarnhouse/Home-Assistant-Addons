@@ -12,7 +12,7 @@ import {
   TableRow,
   Chip,
 } from "@mui/material";
-import { fetchData } from "../api/api";
+import { callApi } from "../utils/api";
 
 const PaymentMethodsPage = () => {
   const [paymentMethods, setPaymentMethods] = useState([]);
@@ -23,7 +23,7 @@ const PaymentMethodsPage = () => {
     const getPaymentMethods = async () => {
       try {
         setLoading(true);
-        const data = await fetchData("/api/all_data");
+        const data = await callApi("/all_data");
         if (data && data.payment_methods) {
           setPaymentMethods(data.payment_methods);
         }

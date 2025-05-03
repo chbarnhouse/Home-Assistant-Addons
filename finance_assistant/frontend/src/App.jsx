@@ -6,7 +6,7 @@ import {
   BrowserRouter as Router,
   useLocation,
 } from "react-router-dom";
-import { getAllData } from "./api/api"; // Import the API function
+import { fetchAllData } from "./utils/api"; // CORRECTED IMPORT PATH
 import AppBar from "@mui/material/AppBar";
 import Toolbar from "@mui/material/Toolbar";
 import Typography from "@mui/material/Typography";
@@ -126,27 +126,6 @@ function App() {
   const handleDrawerToggle = () => {
     setMobileOpen(!mobileOpen);
   };
-
-  // Fetch initial data on component mount
-  useEffect(() => {
-    // Log ingress path for debugging
-    console.log("🔎 ingressPath:", window.ingressPath);
-    console.log("🔎 Current page URL:", window.location.href);
-    console.log("🔎 Current pathname:", window.location.pathname);
-
-    // Load data from API
-    const fetchData = async () => {
-      try {
-        console.log("🔄 Fetching all data...");
-        const data = await getAllData();
-        console.log("✅ Data fetched successfully:", data);
-      } catch (error) {
-        console.error("❌ Error fetching data:", error);
-      }
-    };
-
-    fetchData();
-  }, []);
 
   const drawer = (
     <div>

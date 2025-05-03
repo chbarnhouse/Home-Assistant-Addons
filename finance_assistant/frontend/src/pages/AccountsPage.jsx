@@ -220,6 +220,7 @@ function AccountsPage() {
           id: id,
           name: acc.name || "Unnamed Account", // Needed for sorting/display
           balance: balance,
+          cleared_balance: acc.cleared_balance ?? 0,
           bank: bank,
           account_type: accountType,
           // Use allocation values directly from backend response
@@ -577,14 +578,16 @@ function AccountsPage() {
       </Paper>
 
       {(showEditModal || showAddModal) && (
-        <AccountFormModal
-          open={showEditModal || showAddModal}
-          onClose={handleCloseAccountModal}
-          account={selectedAccount}
-          banks={banks}
-          accountTypes={accountTypes}
-          onSave={handleSaveAccount}
-        />
+        <>
+          <AccountFormModal
+            open={showEditModal || showAddModal}
+            onClose={handleCloseAccountModal}
+            account={selectedAccount}
+            banks={banks}
+            accountTypes={accountTypes}
+            onSave={handleSaveAccount}
+          />
+        </>
       )}
     </Box>
   );
